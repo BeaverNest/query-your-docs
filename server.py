@@ -12,6 +12,8 @@ Run:
 Endpoints (see API.md for the full contract):
   GET    /api/health
   GET    /api/config
+  GET    /api/settings
+  PUT    /api/settings
   GET    /api/sources
   POST   /api/upload               multipart, multiple files
   POST   /api/index
@@ -22,7 +24,8 @@ Endpoints (see API.md for the full contract):
   GET    /api/history/{conversation_id}
 
 All responses use the envelope {ok: bool, data?: ...} on success and
-{ok: false, error: {code, message}} on failure. Secrets are never returned.
+{ok: false, error: {code, message}} on failure. Secrets are never returned:
+GET /api/settings exposes the API key only as api_key.has_key.
 """
 from __future__ import annotations
 
@@ -43,6 +46,7 @@ from fastapi.staticfiles import StaticFiles
 import rag
 from history import CONVERSATION_ID_RE, HistoryStore
 from rag import RagError
+from settings import SettingsStore, validate_payload
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 load_dotenv = getattr(rag, "load_dotenv", None)
@@ -73,6 +77,27 @@ app.add_middleware(
 )
 
 history_store = HistoryStore()
+settings_store = SettingsStore()
+
+
+def _sync_env_from_settings() -> None:
+    """Apply stored model settings to the process env.
+
+    rag.py reads OPENAI_API_KEY / OPENAI_BASE_URL / RAG_LLM_MODEL from the
+    environment; keeping the env in sync here means a key/model saved via
+    PUT /api/settings is used by /api/ask immediately and after restart.
+    Called once at startup and after every settings save.
+    """
+    raw = settings_store.get_all()
+    if raw.get("model.name"):
+        os.environ["RAG_LLM_MODEL"] = raw["model.name"]
+    if raw.get("model.base_url"):
+        os.environ["OPENAI_BASE_URL"] = raw["model.base_url"]
+    if raw.get("model.api_key"):
+        os.environ["OPENAI_API_KEY"] = raw["model.api_key"]
+
+
+_sync_env_from_settings()
 
 _INDEX_LOCK = threading.Lock()
 _index_state = {
@@ -220,6 +245,46 @@ def api_config():
         "llm_configured": _llm_configured(),
         "model": os.environ.get("RAG_LLM_MODEL", DEFAULT_LLM_MODEL),
     })
+
+
+@app.get("/api/settings")
+def api_settings_get():
+    """Return saved settings. The API key is only exposed as has_key.
+
+    Data shape (design contract section 10):
+      {model: {name, base_url, api_key: {has_key}},
+       persona: {preset, custom},
+       retrieval: {top_k, chunk_size},
+       appearance: {theme, language},
+       about: {version, docs, chunks, conversations, server_ok}}
+    """
+    data = settings_store.view()
+    data["about"] = {
+        "version": APP_VERSION,
+        "docs": len(rag.kb_sources()),
+        "chunks": rag.kb_count(),
+        "conversations": history_store.count_conversations(),
+        "server_ok": True,
+    }
+    return _envelope_ok(data)
+
+
+@app.put("/api/settings")
+def api_settings_put(body: dict):
+    """Validate and persist settings (same shape as GET minus `about`).
+
+    Partial saves are allowed: sections omitted from the body keep their
+    current value. An empty/absent api_key keeps the existing key. The raw
+    key is never returned — the response carries api_key.has_key only.
+    """
+    if not isinstance(body, dict):
+        raise _err("bad-request", "Request body must be a JSON object.", 400)
+    normalized, errors = validate_payload(body)
+    if errors:
+        raise _err("bad-request", "; ".join(errors), 400)
+    settings_store.save(normalized)
+    _sync_env_from_settings()
+    return _envelope_ok(settings_store.view())
 
 
 @app.get("/api/sources")

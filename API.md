@@ -40,6 +40,59 @@ FastAPI backend for the NotebookLM-style web UI. Served by `server.py`
 {"ok": true, "data": {"llm_configured": true, "model": "deepseek-v4-flash"}}
 ```
 
+## GET /api/settings
+
+Returns saved settings. **The API key is never returned** — only
+`api_key.has_key`. Persisted in SQLite (`data/settings.db`, `QYD_SETTINGS_DB`
+to override); defaults mirror the env config.
+
+```json
+{"ok": true, "data": {
+  "model": {"name": "deepseek-v4-flash", "base_url": "",
+            "api_key": {"has_key": true}},
+  "persona": {"preset": "concise", "custom": ""},
+  "retrieval": {"top_k": 4, "chunk_size": 600},
+  "appearance": {"theme": "light", "language": "en"},
+  "about": {"version": "0.1.0", "docs": 3, "chunks": 73,
+            "conversations": 2, "server_ok": true}
+}}
+```
+
+- `persona.preset` ∈ `concise | detailed | beginner | indonesian`;
+  `custom` is additive instructions (≤2000 chars).
+- `appearance.theme` ∈ `dark | light | system`; `appearance.language` ∈ `en | id`.
+- `chunk_size` applies on the **next index** (whole-library rebuild), not hot.
+
+## PUT /api/settings
+
+Accepts the same shape as GET **minus `about`**; returns the saved settings
+(key as `has_key` only). Partial saves are allowed — sections omitted from
+the body keep their current value. An empty/absent `api_key` keeps the
+existing key.
+
+Validation (400 `bad-request` with a joined message):
+
+- `model.name` — required, non-empty, ≤120 chars.
+- `model.base_url` — optional; when set must parse as `http(s)://` URL.
+- `persona.preset` — one of the four preset ids.
+- `persona.custom` — optional, ≤2000 chars.
+- `retrieval.top_k` — integer 1–10 (default 4).
+- `retrieval.chunk_size` — integer 100–2000 (default 600).
+- `appearance.theme` / `appearance.language` — allowed values above.
+
+Example:
+
+```json
+{"model": {"name": "gpt-4o-mini", "base_url": "https://api.openai.com/v1",
+           "api_key": "sk-..."},
+ "persona": {"preset": "detailed", "custom": "Always cite page numbers."},
+ "retrieval": {"top_k": 6, "chunk_size": 800},
+ "appearance": {"theme": "system", "language": "id"}}
+```
+
+Saved model values (name/base_url/api_key) are applied to the process
+environment, so `/api/ask` uses them immediately and after restart.
+
 ## GET /api/sources
 
 ```json

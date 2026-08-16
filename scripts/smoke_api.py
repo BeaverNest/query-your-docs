@@ -123,6 +123,7 @@ def main() -> int:
         "QYD_DOCS_DIR": str(docs),
         "RAG_DB": str(kb),
         "QYD_HISTORY_DB": str(hist),
+        "QYD_SETTINGS_DB": str(tmp / "settings.db"),
         "QYD_PORT": str(PORT),
         "HOME": os.path.expanduser("~"),
     }
@@ -221,9 +222,101 @@ def main() -> int:
         ids = {s["id"] for s in j["data"]["sources"]}
         check("removed docs gone from sources", "laporan_pmi" not in ids and "catatan" not in ids, str(ids))
 
+        print("== settings (Step A) ==")
+        env_key = os.environ.get("OPENAI_API_KEY", "")
+        code, j = req("GET", "/api/settings")
+        d = j.get("data", {})
+        check("GET settings: envelope ok + 5 sections",
+              code == 200 and j.get("ok") is True
+              and all(k in d for k in ("model", "persona", "retrieval", "appearance", "about")), str(d)[:300])
+        check("GET settings: api_key is {has_key} only, no raw value",
+              isinstance(d.get("model", {}).get("api_key"), dict)
+              and "has_key" in d["model"]["api_key"]
+              and (len(env_key) < 8 or env_key not in json.dumps(d)), str(d)[:300])
+        check("GET settings: defaults (preset concise, top_k 4, chunk 600, lang en)",
+              d["persona"]["preset"] == "concise" and d["retrieval"]["top_k"] == 4
+              and d["retrieval"]["chunk_size"] == 600 and d["appearance"]["language"] == "en", str(d)[:300])
+        check("GET settings: about reflects server",
+              d["about"]["version"] and isinstance(d["about"]["chunks"], int)
+              and d["about"]["server_ok"] is True, str(d["about"]))
+
+        # save a full valid shape (fake key — never leaves the temp DB)
+        code, j = req("PUT", "/api/settings", body={
+            "model": {"name": "smoke-model", "base_url": "https://api.example.com/v1",
+                      "api_key": "sk-smoke-1234567890"},
+            "persona": {"preset": "detailed", "custom": "Always cite page numbers."},
+            "retrieval": {"top_k": 6, "chunk_size": 800},
+            "appearance": {"theme": "system", "language": "id"},
+        })
+        check("PUT settings: valid full shape -> ok",
+              code == 200 and j.get("ok") is True, str(j)[:300])
+        d = j.get("data", {})
+        check("PUT settings: response has saved values, key as has_key only",
+              d["model"]["name"] == "smoke-model"
+              and d["model"]["api_key"]["has_key"] is True
+              and "sk-smoke-1234567890" not in json.dumps(d), str(d)[:300])
+        check("PUT settings: persona/retrieval/appearance saved",
+              d["persona"]["preset"] == "detailed" and d["persona"]["custom"] == "Always cite page numbers."
+              and d["retrieval"]["top_k"] == 6 and d["retrieval"]["chunk_size"] == 800
+              and d["appearance"]["theme"] == "system" and d["appearance"]["language"] == "id", str(d)[:300])
+
+        # saved model config is bridged to env -> /api/config reflects it
+        code, j = req("GET", "/api/config")
+        check("config reflects saved model (env bridge)",
+              code == 200 and j["data"]["model"] == "smoke-model"
+              and j["data"]["llm_configured"] is True, str(j)[:200])
+
+        # partial save keeps untouched sections
+        code, j = req("PUT", "/api/settings", body={"persona": {"preset": "beginner"}})
+        d = j.get("data", {})
+        check("PUT settings: partial save keeps other sections",
+              code == 200 and d["persona"]["preset"] == "beginner"
+              and d["retrieval"]["top_k"] == 6 and d["model"]["name"] == "smoke-model", str(d)[:300])
+
+        # empty api_key keeps existing key (design 6.2)
+        code, j = req("PUT", "/api/settings", body={"model": {"name": "smoke-model", "api_key": ""}})
+        d = j.get("data", {})
+        check("PUT settings: empty api_key keeps existing key",
+              code == 200 and d["model"]["api_key"]["has_key"] is True, str(d)[:300])
+
+        print("== settings validation ==")
+        code, j = req("PUT", "/api/settings", body={"model": {"name": "  "}})
+        check("PUT settings: empty model name -> 400 bad-request",
+              code == 400 and j["error"]["code"] == "bad-request", str(j)[:200])
+        code, j = req("PUT", "/api/settings", body={"model": {"name": "x" * 121}})
+        check("PUT settings: model name >120 chars -> 400",
+              code == 400 and j["error"]["code"] == "bad-request", str(j)[:200])
+        code, j = req("PUT", "/api/settings", body={"model": {"name": "m", "base_url": "not-a-url"}})
+        check("PUT settings: invalid base_url -> 400",
+              code == 400 and j["error"]["code"] == "bad-request", str(j)[:200])
+        code, j = req("PUT", "/api/settings", body={"retrieval": {"top_k": 0}})
+        check("PUT settings: top_k 0 -> 400",
+              code == 400 and j["error"]["code"] == "bad-request", str(j)[:200])
+        code, j = req("PUT", "/api/settings", body={"retrieval": {"top_k": 11}})
+        check("PUT settings: top_k 11 -> 400",
+              code == 400 and j["error"]["code"] == "bad-request", str(j)[:200])
+        code, j = req("PUT", "/api/settings", body={"retrieval": {"chunk_size": 50}})
+        check("PUT settings: chunk_size 50 -> 400",
+              code == 400 and j["error"]["code"] == "bad-request", str(j)[:200])
+        code, j = req("PUT", "/api/settings", body={"retrieval": {"chunk_size": 5000}})
+        check("PUT settings: chunk_size 5000 -> 400",
+              code == 400 and j["error"]["code"] == "bad-request", str(j)[:200])
+        code, j = req("PUT", "/api/settings", body={"persona": {"preset": "verbose"}})
+        check("PUT settings: unknown persona preset -> 400",
+              code == 400 and j["error"]["code"] == "bad-request", str(j)[:200])
+        code, j = req("PUT", "/api/settings", body={"appearance": {"theme": "neon"}})
+        check("PUT settings: unknown theme -> 400",
+              code == 400 and j["error"]["code"] == "bad-request", str(j)[:200])
+        code, j = req("PUT", "/api/settings", body={"persona": {"custom": "x" * 2001}})
+        check("PUT settings: custom >2000 chars -> 400",
+              code == 400 and j["error"]["code"] == "bad-request", str(j)[:200])
+
         print("== no secrets ==")
         code, j = req("GET", "/api/config")
         check("config never returns api key", "OPENAI_API_KEY" not in json.dumps(j), str(j)[:200])
+        code, j = req("GET", "/api/settings")
+        check("settings never returns the saved api key",
+              "sk-smoke-1234567890" not in json.dumps(j), str(j)[:200])
 
         print(f"\nRESULT: {PASS} passed, {FAIL} failed")
         return 0 if FAIL == 0 else 1
