@@ -1,0 +1,12 @@
+# RAG demo — local knowledge base & model artifacts (never committed)
+data/
+models/
+*.db
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Secrets
+.env
