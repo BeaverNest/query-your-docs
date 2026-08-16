@@ -1,8 +1,9 @@
 # query-your-docs — Local RAG Document Intelligence
 
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
-![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)
+![Citations](https://img.shields.io/badge/answers-with%20citations-4caf50?style=flat-square)
 ![Local AI](https://img.shields.io/badge/local--first-no%20cloud-4caf50?style=flat-square)
+![Multilingual](https://img.shields.io/badge/multilingual-ID%20%7C%20EN-2196f3?style=flat-square)
 
 Turn business documents into a searchable knowledge base and ask questions
 in natural language — every answer comes with **citations** to the source
