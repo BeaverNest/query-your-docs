@@ -10,9 +10,17 @@ Commands:
   python rag.py ask "question" [-k N]  answer with citations from the KB
   python rag.py stats                 show KB statistics
 
+Library use (imported by server.py):
+  rag.index_docs(paths)            -> structured summary dict
+  rag.kb_sources()                 -> [{id, title, pages, chunks}]
+  rag.kb_count()                   -> total chunk count
+  rag.answer_question(q, k)        -> {"answer", "sources":[{n, doc_id, title,
+                                     page, chunk_idx, score, snippet}]}
+
 Environment (or .env next to this file):
-  OPENAI_API_KEY   required for `ask` (any OpenAI-compatible API)
+  OPENAI_API_KEY   required for `ask`/answer_question (any OpenAI-compatible API)
   OPENAI_BASE_URL  optional, e.g. https://api.openai.com/v1
+  RAG_LLM_MODEL    optional, LLM model name (default deepseek-v4-flash)
   RAG_MODEL_DIR    optional, ONNX model dir (default ./models/...)
   RAG_DB           optional, SQLite path (default data/kb.db)
 """
@@ -35,6 +43,23 @@ DB_PATH = Path(os.environ.get("RAG_DB", SCRIPT_DIR / "data" / "kb.db"))
 TARGET_CHUNK_TOKENS = 600
 OVERLAP_TOKENS = 120
 TOP_K_DEFAULT = 4
+
+
+class RagError(Exception):
+    """Base error for pipeline failures; maps to a JSON error envelope."""
+
+    code = "transient"
+    status = 500
+
+
+class KbEmptyError(RagError):
+    code = "kb-empty"
+    status = 409
+
+
+class LlmNotConfiguredError(RagError):
+    code = "llm-not-configured"
+    status = 503
 
 
 # ---------------------------------------------------------------- env/.env
@@ -85,6 +110,31 @@ def doc_title(pdf: Path) -> str:
     except Exception:
         pass
     return pdf.stem.replace("_", " ").strip()
+
+
+def extract_doc_pages(path: Path) -> list[tuple[int, str]]:
+    """Return [(page_number, text)] for a PDF or TXT document.
+
+    PDFs use per-page pdftotext extraction; TXT files are read whole as
+    page 1. Empty/scanned pages are skipped (the caller decides whether
+    the document yielded any text at all).
+    """
+    if path.suffix.lower() == ".txt":
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return []
+        return [(1, text)] if text.strip() else []
+    pages: list[tuple[int, str]] = []
+    for page in range(1, pdf_page_count(path) + 1):
+        text = page_text(path, page)
+        if text.strip():
+            pages.append((page, text))
+    return pages
+
+
+def doc_page_count(path: Path) -> int:
+    return 1 if path.suffix.lower() == ".txt" else pdf_page_count(path)
 
 
 # ---------------------------------------------------------------- chunking
@@ -149,32 +199,79 @@ def kb_connect() -> sqlite3.Connection:
     return con
 
 
-def index_docs(paths: list[Path]) -> None:
+def kb_count() -> int:
+    con = kb_connect()
+    n = con.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+    con.close()
+    return n
+
+
+def kb_sources() -> list[dict]:
+    """List indexed documents with page/chunk counts, ordered by doc_id."""
+    con = kb_connect()
+    rows = con.execute(
+        "SELECT doc_id, doc_title, COUNT(*) AS chunks, COUNT(DISTINCT page) AS pages "
+        "FROM chunks GROUP BY doc_id ORDER BY doc_id"
+    ).fetchall()
+    con.close()
+    return [{"id": r[0], "title": r[1], "chunks": r[2], "pages": r[3]} for r in rows]
+
+
+# ------------------------------------------------------------------ index
+def _get_embedder() -> E5Embedder:
+    """Lazy singleton so a long-running server does not reload the model per ask."""
+    if getattr(_get_embedder, "_cache", None) is None:
+        _get_embedder._cache = E5Embedder()
+    return _get_embedder._cache
+
+
+def _get_tokenizer():
     from tokenizers import Tokenizer
     from embed import TOKENIZER_JSON
 
-    embedder = E5Embedder()
-    tokenizer = Tokenizer.from_file(TOKENIZER_JSON)
-    tokenizer.enable_truncation(max_length=512)
+    if getattr(_get_tokenizer, "_cache", None) is None:
+        tok = Tokenizer.from_file(TOKENIZER_JSON)
+        tok.enable_truncation(max_length=512)
+        _get_tokenizer._cache = tok
+    return _get_tokenizer._cache
+
+
+def index_docs(paths: list[Path]) -> dict:
+    """(Re)build the knowledge base from the given PDF/TXT files.
+
+    The KB is a whole-library store: every index run deletes all chunks and
+    re-embeds the given documents (uploading one doc means reindexing all).
+
+    Returns a structured summary:
+      {docs_indexed, docs_total, chunks, per_doc: [{name, pages, chunks,
+        status: "ok"|"error", error?}], db}
+    """
+    embedder = _get_embedder()
+    tokenizer = _get_tokenizer()
 
     con = kb_connect()
     con.execute("DELETE FROM chunks")  # rebuild
 
     total_chunks = 0
-    for pdf in paths:
-        pages = pdf_page_count(pdf)
-        title = doc_title(pdf)
-        doc_id = pdf.stem
+    per_doc: list[dict] = []
+    for path in paths:
+        pages_count = doc_page_count(path)
+        title = doc_title(path)
+        doc_id = path.stem
         chunk_texts: list[tuple[int, str]] = []  # (page, text)
-        for page in range(1, pages + 1):
-            text = page_text(pdf, page)
-            if not text.strip():
-                print(f"  [skip] {pdf.name} page {page}: no text (scanned image?)")
-                continue
+        for page, text in extract_doc_pages(path):
             for chunk in chunk_text(text, tokenizer):
                 chunk_texts.append((page, chunk))
+
         if not chunk_texts:
-            print(f"  [warn] {pdf.name}: no extractable text, document ignored")
+            per_doc.append({
+                "name": path.name,
+                "pages": pages_count,
+                "chunks": 0,
+                "status": "error",
+                "error": "no-text-extracted",
+            })
+            print(f"  [warn] {path.name}: no extractable text, document ignored")
             continue
 
         batch = 32
@@ -188,13 +285,29 @@ def index_docs(paths: list[Path]) -> None:
                     (doc_id, title, page, start + offset, text, vec.tobytes()),
                 )
         total_chunks += len(chunk_texts)
-        print(f"  indexed {pdf.name}: {pages} pages, {len(chunk_texts)} chunks")
+        per_doc.append({
+            "name": path.name,
+            "pages": pages_count,
+            "chunks": len(chunk_texts),
+            "status": "ok",
+            "error": None,
+        })
+        print(f"  indexed {path.name}: {pages_count} pages, {len(chunk_texts)} chunks")
 
     con.commit()
     con.close()
-    print(f"INDEX_OK: {len(paths)} docs, {total_chunks} chunks -> {DB_PATH}")
+    summary = {
+        "docs_indexed": sum(1 for d in per_doc if d["status"] == "ok"),
+        "docs_total": len(paths),
+        "chunks": total_chunks,
+        "per_doc": per_doc,
+        "db": str(DB_PATH),
+    }
+    print(f"INDEX_OK: {summary['docs_indexed']} docs, {total_chunks} chunks -> {DB_PATH}")
+    return summary
 
 
+# --------------------------------------------------------------- retrieval
 def retrieve(query_vec, k: int):
     con = kb_connect()
     rows = con.execute("SELECT doc_id, doc_title, page, chunk_idx, text, embedding FROM chunks").fetchall()
@@ -209,16 +322,22 @@ def retrieve(query_vec, k: int):
     return [(rows[i][0], rows[i][1], rows[i][2], rows[i][3], rows[i][4], float(sims[i])) for i in top]
 
 
-def ask(question: str, k: int) -> None:
+# ------------------------------------------------------------------ answer
+def answer_question(question: str, k: int = TOP_K_DEFAULT) -> dict:
+    """Retrieve top-k chunks and produce an LLM answer with citations.
+
+    Returns {"answer": str, "sources": [{n, doc_id, title, page, chunk_idx,
+    score, snippet}]} where `n` matches the [n] markers in `answer`.
+    Raises KbEmptyError / LlmNotConfiguredError / RagError.
+    """
     import numpy as np
     from openai import OpenAI
 
-    embedder = E5Embedder()
+    embedder = _get_embedder()
     query_vec = embedder.embed_query(question)
     hits = retrieve(query_vec, k)
     if not hits:
-        print("ASK_ERROR: knowledge base is empty. Run `python rag.py index <pdf-or-dir>` first.")
-        sys.exit(1)
+        raise KbEmptyError("Knowledge base is empty. Upload and index documents first.")
 
     context_parts = []
     for i, (doc_id, title, page, cidx, text, score) in enumerate(hits, 1):
@@ -237,9 +356,8 @@ def ask(question: str, k: int) -> None:
 
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        print("ASK_ERROR: OPENAI_API_KEY not set. Add it to .env or export it.")
-        sys.exit(1)
-    client = OpenAI(api_key=api_key, base_url=os.environ.get("OPENAI_BASE_URL") or None)
+        raise LlmNotConfiguredError("OPENAI_API_KEY not set. Add it to .env or export it.")
+    client = OpenAI(api_key=api_key, base_url=os.environ.get("OPENAI_BASE_URL") or None, timeout=120)
     resp = client.chat.completions.create(
         model=os.environ.get("RAG_LLM_MODEL", "deepseek-v4-flash"),
         messages=[
@@ -251,13 +369,35 @@ def ask(question: str, k: int) -> None:
     )
     answer = (resp.choices[0].message.content or "").strip()
 
+    sources = [
+        {
+            "n": i + 1,
+            "doc_id": doc_id,
+            "title": title,
+            "page": page,
+            "chunk_idx": cidx,
+            "score": round(float(score), 4),
+            "snippet": text[:240],
+        }
+        for i, (doc_id, title, page, cidx, text, score) in enumerate(hits)
+    ]
+    return {"answer": answer, "sources": sources}
+
+
+def ask(question: str, k: int) -> None:
+    """CLI wrapper around answer_question (kept for `python rag.py ask`)."""
+    try:
+        result = answer_question(question, k)
+    except RagError as exc:
+        print(f"ASK_ERROR: {exc}")
+        sys.exit(1)
     print("Question:", question)
     print()
-    print("Answer:", answer)
+    print("Answer:", result["answer"])
     print()
     print("Sources:")
-    for i, (doc_id, title, page, cidx, text, score) in enumerate(hits, 1):
-        print(f"  [{i}] {title} (page {page}, score {score:.3f})")
+    for s in result["sources"]:
+        print(f"  [{s['n']}] {s['title']} (page {s['page']}, score {s['score']:.3f})")
 
 
 def stats() -> None:
@@ -291,7 +431,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_index = sub.add_parser("index", help="build/rebuild the knowledge base")
-    p_index.add_argument("path", nargs="?", default=str(SCRIPT_DIR / "data" / "docs"), help="PDF file or directory of PDFs")
+    p_index.add_argument("path", nargs="?", default=str(SCRIPT_DIR / "data" / "docs"), help="PDF/TXT file or directory of PDF/TXT files")
     p_index.add_argument("--chunk-tokens", type=int, default=TARGET_CHUNK_TOKENS)
     p_index.add_argument("--overlap-tokens", type=int, default=OVERLAP_TOKENS)
 

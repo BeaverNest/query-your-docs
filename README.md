@@ -19,6 +19,7 @@ embeddings → Q&A with citations.
 - [Architecture](#architecture)
 - [Quickstart](#quickstart)
 - [Usage](#usage)
+- [Web API](#web-api)
 - [Project structure](#project-structure)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
@@ -36,7 +37,9 @@ embeddings → Q&A with citations.
 - **Citations, not hallucinations** — the LLM is instructed to answer only
   from the retrieved context and to cite sources with `[n]` markers; a
   per-answer source list is printed with document, page and relevance score.
-- **CLI only, no server** — `index`, `ask`, `stats`.
+- **Web API with history** — `server.py` (FastAPI) exposes upload, index,
+  ask-with-citations and conversation-history endpoints for a
+  NotebookLM-style web UI (see [API.md](API.md)).
 
 ## Architecture
 
@@ -211,7 +214,7 @@ atau IPO-nya dalam dokumen ini.
 python rag.py stats
 ```
 
-```
+```text
 DB: data/kb.db
 total chunks: 73
   laporan_makroekonomi_indonesia_2026-08: 24 chunks across 18 pages
@@ -219,14 +222,55 @@ total chunks: 73
   riset_industri_otomotif_indonesia_2026-08: 40 chunks across 21 pages
 ```
 
+## Web API
+
+Start the FastAPI server (serves the web UI and the JSON API):
+
+```bash
+python server.py
+# query-your-docs server on http://127.0.0.1:8000 (API docs at /docs)
+```
+
+Endpoints:
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/upload` | store uploaded `.pdf`/`.txt` files (multipart, multi-file) |
+| POST | `/api/index` | rebuild the whole knowledge base (sync) |
+| GET | `/api/sources` | list sources (ready / pending / error) |
+| DELETE | `/api/sources/{id}` | remove a source and reindex the rest |
+| POST | `/api/ask` | answer with citations; persists to history |
+| GET | `/api/history` | list conversations |
+| GET | `/api/history/{id}` | load one conversation's messages |
+| GET | `/api/config` | `{llm_configured, model}` |
+| GET | `/api/health` | status, chunk count, conversation count |
+
+The full contract — response envelopes, error codes, limits — lives in
+[API.md](API.md). Every reindex rebuilds the whole KB (the pipeline's
+design), so uploading one document means reindexing all of them.
+
+Optional environment variables for the server: `QYD_PORT` (default `8000`),
+`QYD_HOST` (default `127.0.0.1`), `QYD_DOCS_DIR`, `QYD_HISTORY_DB`,
+`RAG_DB`. Smoke-test the API end-to-end (throwaway data, never touches your
+real KB):
+
+```bash
+python scripts/smoke_api.py
+```
+
 ## Project structure
 
 ```
-rag.py                     CLI: index / ask / stats
+rag.py                     CLI + library: index / ask / stats / answer_question
 embed.py                   e5-small ONNX embedder (passage/query prefixes)
+server.py                  FastAPI web server (upload, index, ask, history)
+history.py                 SQLite conversation store (data/history.db)
+API.md                     web API contract
 scripts/download_model.py  fetch the ONNX model from Hugging Face
+scripts/smoke_api.py       end-to-end API smoke test (throwaway data)
 requirements.txt           Python dependencies
 .env.example               config template (copy to .env)
+static/                    web UI assets (placeholder until frontend lands)
 data/docs/                 your PDFs (gitignored)
 models/                    downloaded model (gitignored)
 ```
