@@ -240,6 +240,11 @@ The NotebookLM-style interface lets you:
   and relevance score.
 - **Keep history** — conversations persist across restarts in the sidebar,
   so you can pick up where you left off.
+- **Configure everything in Settings** — the gear-icon drawer manages the
+  LLM (model name, base URL, masked API key with live test), answer persona
+  presets (concise / detailed / beginner / Indonesian + custom), retrieval
+  knobs (top-k, chunk size) and appearance (theme, UI language). Changes are
+  saved with an explicit **Save** / **Discard** and apply immediately.
 
 The UI talks to the same pipeline as the CLI: local embeddings, SQLite vector
 store, and any OpenAI-compatible LLM you configure in `.env`.
@@ -265,6 +270,9 @@ Endpoints:
 | GET | `/api/history` | list conversations |
 | GET | `/api/history/{id}` | load one conversation's messages |
 | GET | `/api/config` | `{llm_configured, model}` |
+| GET | `/api/settings` | saved settings (API key returned only as `has_key`) |
+| PUT | `/api/settings` | persist settings (model, persona, retrieval, appearance) |
+| POST | `/api/settings/test` | test a staged model connection (never saves) |
 | GET | `/api/health` | status, chunk count, conversation count |
 
 The full contract — response envelopes, error codes, limits — lives in
