@@ -174,12 +174,12 @@ def main() -> None:
             gear_box = page.locator("#settingsBtn").bounding_box()
             check("gear target >= 32px", gear_box is not None and gear_box["width"] >= 32 and gear_box["height"] >= 32, str(gear_box))
 
-            # served == disk (cache-bust v2)
+            # served == disk (cache-bust v3)
             for f in ("index.html", "style.css", "app.js"):
                 got = page.evaluate(f"fetch('/static/{f}').then(r=>r.text())")
                 disk = (REPO / "static" / f).read_text(encoding="utf-8")
                 check(f"static/{f} served == disk", got == disk)
-            check("cache-bust v=2", "v=2" in (REPO / "static" / "index.html").read_text(encoding="utf-8"))
+            check("cache-bust v=3", "v=3" in (REPO / "static" / "index.html").read_text(encoding="utf-8"))
 
             # ------------------------------------------------------------- 2. open
             print("== 2. drawer opens ==")

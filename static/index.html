@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>query-your-docs</title>
-<link rel="stylesheet" href="/static/style.css?v=2">
+<link rel="stylesheet" href="/static/style.css?v=3">
 </head>
 <body>
 <div id="app" class="app">
@@ -162,12 +162,122 @@
           <span id="settingsTestStatus" class="test-status" role="status" aria-live="polite"></span>
         </div>
       </section>
+
+      <section class="settings-section" aria-labelledby="settingsPersonaLabel">
+        <h3 id="settingsPersonaLabel" class="settings-label">Persona / answer style</h3>
+        <div id="settingsPresetGrid" class="preset-grid" role="radiogroup" aria-label="Answer style preset">
+          <label class="preset-card">
+            <input type="radio" name="personaPreset" value="concise" />
+            <span class="preset-card-body">
+              <span class="preset-name">Concise</span>
+              <span class="preset-desc">Short, direct answers</span>
+            </span>
+          </label>
+          <label class="preset-card">
+            <input type="radio" name="personaPreset" value="detailed" />
+            <span class="preset-card-body">
+              <span class="preset-name">Detailed</span>
+              <span class="preset-desc">Thorough, structured answers</span>
+            </span>
+          </label>
+          <label class="preset-card">
+            <input type="radio" name="personaPreset" value="beginner" />
+            <span class="preset-card-body">
+              <span class="preset-name">Beginner</span>
+              <span class="preset-desc">Simple language, explains terms</span>
+            </span>
+          </label>
+          <label class="preset-card">
+            <input type="radio" name="personaPreset" value="indonesian" />
+            <span class="preset-card-body">
+              <span class="preset-name">Bahasa Indonesia</span>
+              <span class="preset-desc">Selalu menjawab dalam Bahasa Indonesia</span>
+            </span>
+          </label>
+        </div>
+        <div class="settings-field">
+          <div class="custom-head">
+            <label for="settingsCustom">Custom instructions <span class="optional">(optional)</span></label>
+            <span id="settingsCustomChip" class="custom-chip" hidden></span>
+          </div>
+          <textarea id="settingsCustom" rows="3" maxlength="2000" placeholder="e.g. Always include the raw numbers, cite page numbers, stay under 3 paragraphs&hellip;"></textarea>
+          <div class="custom-meta">
+            <span id="settingsCustomCount" class="custom-count">0 / 2000</span>
+            <span class="custom-hint">Additive &mdash; appended to the active preset</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-section" aria-labelledby="settingsRetrievalLabel">
+        <button id="settingsAdvancedToggle" class="advanced-toggle" type="button" aria-expanded="false" aria-controls="settingsAdvancedBody">
+          <span id="settingsRetrievalLabel" class="settings-label">Retrieval (advanced)</span>
+          <span class="chevron" aria-hidden="true">&#9662;</span>
+        </button>
+        <div id="settingsAdvancedBody" class="advanced-body" hidden>
+          <div class="settings-field">
+            <label for="settingsTopK">Top-k results</label>
+            <input id="settingsTopK" type="number" min="1" max="10" step="1" inputmode="numeric" />
+            <div class="field-hint">1&ndash;10 &middot; how many chunks are retrieved</div>
+            <div class="field-error" id="settingsTopKErr" hidden></div>
+          </div>
+          <div class="settings-field">
+            <label for="settingsChunkSize">Chunk size (tokens)</label>
+            <input id="settingsChunkSize" type="number" min="100" max="2000" step="100" inputmode="numeric" />
+            <div class="field-hint">100&ndash;2000 &middot; applies on next index</div>
+            <div class="field-error" id="settingsChunkSizeErr" hidden></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-section" aria-labelledby="settingsAppearanceLabel">
+        <h3 id="settingsAppearanceLabel" class="settings-label">Appearance</h3>
+        <div class="settings-field">
+          <span class="field-label" id="settingsThemeLabel">Theme</span>
+          <div class="seg-row" role="radiogroup" aria-labelledby="settingsThemeLabel">
+            <label class="seg"><input type="radio" name="appearanceTheme" value="dark" /><span>Dark</span></label>
+            <label class="seg"><input type="radio" name="appearanceTheme" value="light" /><span>Light</span></label>
+            <label class="seg"><input type="radio" name="appearanceTheme" value="system" /><span>System</span></label>
+          </div>
+          <div class="field-hint">Applies instantly</div>
+        </div>
+        <div class="settings-field">
+          <span class="field-label" id="settingsLangLabel">UI language</span>
+          <div class="seg-row" role="radiogroup" aria-labelledby="settingsLangLabel">
+            <label class="seg"><input type="radio" name="appearanceLanguage" value="en" /><span>English</span></label>
+            <label class="seg"><input type="radio" name="appearanceLanguage" value="id" /><span>Indonesian</span></label>
+          </div>
+          <div class="field-hint">Applies instantly</div>
+        </div>
+      </section>
+
+      <section class="settings-section" aria-labelledby="settingsAboutLabel">
+        <h3 id="settingsAboutLabel" class="settings-label">About</h3>
+        <div id="settingsAboutBody" class="about-body">
+          <div class="about-line" id="settingsAboutLine">Loading&hellip;</div>
+          <div class="about-status" id="settingsAboutStatus"></div>
+        </div>
+      </section>
+    </div>
+
+    <div class="drawer-foot">
+      <div id="settingsDiscardConfirm" class="discard-confirm" hidden>
+        <span class="discard-confirm-text">Discard changes?</span>
+        <div class="discard-confirm-actions">
+          <button id="settingsConfirmCancel" class="btn btn-sm" type="button">Cancel</button>
+          <button id="settingsConfirmDiscard" class="btn btn-sm btn-danger" type="button">Discard</button>
+        </div>
+      </div>
+      <div id="settingsFootErr" class="foot-error" role="alert" hidden></div>
+      <div class="drawer-foot-actions">
+        <button id="settingsDiscardBtn" class="btn" type="button" disabled>Discard</button>
+        <button id="settingsSaveBtn" class="btn btn-primary" type="button" disabled>Save</button>
+      </div>
     </div>
   </div>
 </div>
 
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="/static/app.js?v=2"></script>
+<script src="/static/app.js?v=3"></script>
 </body>
 </html>

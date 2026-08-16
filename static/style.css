@@ -575,6 +575,219 @@ html[data-theme="dark"] .send-btn { color: #202124; }
 .test-status.err { color: var(--error); }
 .test-status.testing { color: var(--text-2); }
 
+/* ---------- Persona preset cards (design §4.2, §6.7) ---------- */
+.preset-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.preset-card {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  cursor: pointer;
+  min-height: 44px;
+  transition: border-color .12s, background .12s, box-shadow .12s;
+}
+.preset-card:hover { background: var(--surface-2); }
+.preset-card:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.preset-card input {
+  position: absolute;
+  opacity: 0;
+  width: 1px; height: 1px;
+  margin: 0;
+}
+.preset-card-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  padding: 9px 12px 9px 30px;
+}
+.preset-card input:focus-visible + .preset-card-body {
+  outline: var(--focus-ring);
+  outline-offset: -1px;
+  border-radius: 10px;
+}
+.preset-card::before {
+  content: '';
+  position: absolute;
+  left: 10px; top: 50%;
+  transform: translateY(-50%);
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--text-2);
+  background: var(--surface);
+  box-sizing: border-box;
+}
+.preset-card:has(input:checked)::before {
+  border-color: var(--accent);
+  border-width: 4px;
+  background: var(--surface);
+}
+.preset-name { font-size: 13px; font-weight: 600; color: var(--text-1); }
+.preset-desc { font-size: 12px; color: var(--text-2); line-height: 1.35; }
+
+/* ---------- Custom instructions box ---------- */
+.custom-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.custom-head label { font-size: 13px; font-weight: 500; color: var(--text-1); }
+.custom-head .optional { font-weight: 400; color: var(--text-2); }
+.settings-field textarea {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-1);
+  font-size: 14px;
+  font-family: inherit;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 72px;
+  outline: none;
+  transition: border-color .12s, box-shadow .12s;
+}
+.settings-field textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.custom-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-2);
+  min-height: 16px;
+}
+.custom-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ---------- Advanced retrieval (collapsed, design §6.8) ---------- */
+.advanced-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 0;
+  border: none;
+  background: transparent;
+  text-align: left;
+}
+.advanced-toggle:hover .settings-label { color: var(--text-1); }
+.advanced-toggle .chevron {
+  color: var(--text-2);
+  font-size: 12px;
+  transition: transform .15s ease;
+}
+.advanced-toggle[aria-expanded="true"] .chevron { transform: rotate(180deg); }
+.advanced-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+  animation: advanced-in .15s ease;
+}
+@keyframes advanced-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.field-hint { font-size: 12px; color: var(--text-2); }
+
+/* ---------- Appearance segments (design §4.2) ---------- */
+.field-label { font-size: 13px; font-weight: 500; color: var(--text-1); }
+.seg-row {
+  display: flex;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 4px;
+  background: var(--surface-2);
+}
+.seg {
+  flex: 1;
+  position: relative;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 500;
+}
+.seg input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; }
+.seg:has(input:checked) {
+  background: var(--surface);
+  color: var(--text-1);
+  box-shadow: 0 1px 2px rgba(60, 64, 67, .2);
+}
+.seg input:focus-visible + span {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ---------- About (read-only, design §4.2) ---------- */
+.about-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.about-line { font-size: 13px; color: var(--text-1); line-height: 1.5; word-break: break-word; }
+.about-status { font-size: 12px; font-weight: 600; }
+.about-status.ok { color: var(--success); }
+.about-status.err { color: var(--error); }
+
+/* ---------- Drawer footer (Save/Discard, design §4.2/§5) ---------- */
+.drawer-foot {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border);
+  padding: 12px 20px calc(12px + env(safe-area-inset-bottom));
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.drawer-foot-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.discard-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-1);
+}
+.discard-confirm-actions { display: flex; gap: 8px; }
+.foot-error { font-size: 13px; color: var(--error); }
+
 /* ---------- Toast ---------- */
 .toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
@@ -634,8 +847,17 @@ html[data-theme="dark"] .toast { background: var(--surface-2); color: var(--text
   .drawer { width: 100%; }
   .drawer-head { flex-basis: 48px; padding-left: 12px; }
   .drawer-body { padding: 16px; }
+  .drawer-foot { padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); }
   .settings-field input, .settings-field .key-reveal, .settings-test-row .btn { min-height: 44px; }
   .settings-field input { font-size: 16px; }
+  .settings-field textarea { min-height: 84px; font-size: 16px; }
   .key-reveal { width: 40px; height: 40px; right: 2px; }
   .drawer-backdrop { z-index: 70; }
+
+  /* Preset cards stack 1 column; each card remains >= 44px (design §9.3) */
+  .preset-grid { grid-template-columns: 1fr; }
+  .preset-card { min-height: 44px; }
+  .seg { min-height: 40px; }
+  .drawer-foot-actions .btn { min-height: 44px; }
+  .discard-confirm-actions .btn { min-height: 40px; }
 }

@@ -24,11 +24,20 @@ const state = {
     open: false,
     loaded: false,
     touched: false,      // user edited a field since last load
-    saved: null,         // {name, base_url, has_key} snapshot from GET
-    form: { name: '', base_url: '', api_key: '' },  // staged values (key NEVER prefilled)
+    saved: null,         // full snapshot from GET: {model, persona, retrieval, appearance, about}
+    form: {
+      name: '', base_url: '', api_key: '',
+      preset: 'concise', custom: '',
+      top_k: 4, chunk_size: 600,
+      theme: 'light', language: 'en',
+    },                   // staged values (key NEVER prefilled)
     dirty: false,
+    advancedOpen: false,
     testing: false,
     testStatus: null,    // {kind:'ok'|'err', text}
+    saving: false,
+    saveError: null,
+    discardConfirm: false,
   },
 };
 
@@ -126,9 +135,27 @@ async function refreshHistory() {
 }
 
 /* ------------------------------------------------------------ theme */
+const THEMES = ['dark', 'light', 'system'];
+const LANGUAGES = ['en', 'id'];
+const PRESET_IDS = ['concise', 'detailed', 'beginner', 'indonesian'];
+const PRESET_LABELS = {
+  concise: 'Concise',
+  detailed: 'Detailed',
+  beginner: 'Beginner',
+  indonesian: 'Bahasa Indonesia',
+};
+
+function effectiveTheme(theme) {
+  if (theme === 'system') {
+    return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+  }
+  return theme;
+}
+
 function applyTheme(theme) {
-  document.documentElement.setAttribute('data-theme', theme);
-  $('#themeBtn').textContent = theme === 'dark' ? '\u2600' : '\uD83C\uDF19';
+  const resolved = effectiveTheme(theme);
+  document.documentElement.setAttribute('data-theme', resolved);
+  $('#themeBtn').textContent = resolved === 'dark' ? '\u2600' : '\uD83C\uDF19';
   try { localStorage.setItem('qyd-theme', theme); } catch (_) { /* private mode */ }
 }
 
@@ -136,9 +163,18 @@ function initTheme() {
   let theme = null;
   try { theme = localStorage.getItem('qyd-theme'); } catch (_) { /* ignore */ }
   if (!theme) {
-    theme = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    // No override yet: follow the OS (System), matching the old matchMedia default.
+    theme = 'system';
   }
   applyTheme(theme);
+  // Live-follow when the preference is System (design §6.9).
+  if (window.matchMedia) {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+      let cur = 'system';
+      try { cur = localStorage.getItem('qyd-theme') || 'system'; } catch (_) { /* ignore */ }
+      if (cur === 'system') applyTheme('system');
+    });
+  }
 }
 
 /* ------------------------------------------------------------ rendering: sources */
@@ -649,35 +685,121 @@ function settingsFieldErrors() {
       errs.base_url = 'Must be a valid http(s) URL';
     }
   }
+  const tk = Number(f.top_k);
+  if (!Number.isInteger(tk) || tk < 1 || tk > 10) errs.top_k = 'Top-k must be an integer 1\u201310';
+  const cs = Number(f.chunk_size);
+  if (!Number.isInteger(cs) || cs < 100 || cs > 2000) errs.chunk_size = 'Chunk size must be 100\u20132000';
   return errs;
 }
 
 function settingsRenderErrors() {
   const errs = settingsFieldErrors();
-  const nameEl = $('#settingsModelName');
-  const urlEl = $('#settingsBaseUrl');
-  const nameErr = $('#settingsModelNameErr');
-  const urlErr = $('#settingsBaseUrlErr');
-  nameEl.classList.toggle('invalid', !!errs.name);
-  urlEl.classList.toggle('invalid', !!errs.base_url);
-  nameErr.hidden = !errs.name;
-  nameErr.textContent = errs.name || '';
-  urlErr.hidden = !errs.base_url;
-  urlErr.textContent = errs.base_url || '';
+  const pairs = [
+    ['#settingsModelName', '#settingsModelNameErr', errs.name],
+    ['#settingsBaseUrl', '#settingsBaseUrlErr', errs.base_url],
+    ['#settingsTopK', '#settingsTopKErr', errs.top_k],
+    ['#settingsChunkSize', '#settingsChunkSizeErr', errs.chunk_size],
+  ];
+  pairs.forEach(([sel, errSel, msg]) => {
+    const el = $(sel);
+    const errEl = $(errSel);
+    el.classList.toggle('invalid', !!msg);
+    errEl.hidden = !msg;
+    errEl.textContent = msg || '';
+  });
   return errs;
 }
 
 function settingsMarkDirty() {
   const s = state.settings;
-  const sv = s.saved || { name: '', base_url: '', has_key: false };
-  const f = s.form;
-  s.dirty = !!(f.name !== sv.name || f.base_url !== sv.base_url || f.api_key !== '');
+  if (!s.saved) {
+    s.dirty = false;
+  } else {
+    const sv = s.saved;
+    const f = s.form;
+    // Appearance (theme/language) is instant-only per design §6.1 — NOT staged,
+    // so it never makes the form dirty. Only model/persona/retrieval do.
+    s.dirty = !!(
+      f.name !== sv.model.name ||
+      f.base_url !== sv.model.base_url ||
+      f.api_key !== '' ||
+      f.preset !== sv.persona.preset ||
+      f.custom !== sv.persona.custom ||
+      f.top_k !== sv.retrieval.top_k ||
+      f.chunk_size !== sv.retrieval.chunk_size
+    );
+  }
   $('#settingsDirtyChip').hidden = !s.dirty;
+  settingsRenderFooter();
+}
+
+function settingsRenderFooter() {
+  const s = state.settings;
+  const valid = Object.keys(settingsFieldErrors()).length === 0;
+  const saveBtn = $('#settingsSaveBtn');
+  const discardBtn = $('#settingsDiscardBtn');
+  saveBtn.disabled = !(s.dirty && valid && !s.saving);
+  saveBtn.textContent = s.saving ? 'Saving\u2026' : 'Save';
+  discardBtn.disabled = !(s.dirty && !s.saving);
+  $('#settingsDiscardConfirm').hidden = !s.discardConfirm;
+  const errEl = $('#settingsFootErr');
+  errEl.hidden = !s.saveError;
+  if (s.saveError) errEl.textContent = s.saveError;
+}
+
+function settingsRenderPresets() {
+  const s = state.settings;
+  const f = s.form;
+  $$('input[name="personaPreset"]').forEach((r) => {
+    r.checked = r.value === f.preset;
+  });
+  $('#settingsCustom').value = f.custom;
+  const count = (f.custom || '').length;
+  $('#settingsCustomCount').textContent = count + ' / 2000';
+  const chip = $('#settingsCustomChip');
+  const hasCustom = !!f.custom.trim();
+  chip.hidden = !hasCustom;
+  if (hasCustom) chip.textContent = 'Custom + ' + (PRESET_LABELS[f.preset] || f.preset);
+}
+
+function settingsRenderAppearance() {
+  const f = state.settings.form;
+  $$('input[name="appearanceTheme"]').forEach((r) => { r.checked = r.value === f.theme; });
+  $$('input[name="appearanceLanguage"]').forEach((r) => { r.checked = r.value === f.language; });
+}
+
+function settingsRenderRetrieval() {
+  const s = state.settings;
+  const f = s.form;
+  $('#settingsAdvancedToggle').setAttribute('aria-expanded', s.advancedOpen ? 'true' : 'false');
+  $('#settingsAdvancedBody').hidden = !s.advancedOpen;
+  $('#settingsTopK').value = f.top_k;
+  $('#settingsChunkSize').value = f.chunk_size;
+}
+
+function settingsRenderAbout(about) {
+  const line = $('#settingsAboutLine');
+  const status = $('#settingsAboutStatus');
+  if (!about) {
+    line.textContent = 'Not loaded';
+    status.textContent = '';
+    return;
+  }
+  const docs = about.docs || 0;
+  const chunks = about.chunks || 0;
+  const convs = about.conversations || 0;
+  line.textContent =
+    'query-your-docs v' + about.version +
+    ' \u00B7 ' + docs + ' doc' + (docs === 1 ? '' : 's') +
+    ' \u00B7 ' + chunks + ' chunk' + (chunks === 1 ? '' : 's') +
+    ' \u00B7 ' + convs + ' conversation' + (convs === 1 ? '' : 's');
+  status.textContent = about.server_ok ? '\u2713 Server OK' : '\u2715 Server unreachable';
+  status.className = 'about-status ' + (about.server_ok ? 'ok' : 'err');
 }
 
 function settingsRenderKeyMeta() {
   const s = state.settings;
-  const hasKey = !!(s.saved && s.saved.has_key);
+  const hasKey = !!(s.saved && s.saved.model.api_key && s.saved.model.api_key.has_key);
   const typed = !!s.form.api_key;
   // Saved chip only when server has a key and the field is empty (typed value never shown on load)
   $('#settingsKeySaved').hidden = !(hasKey && !typed);
@@ -695,6 +817,7 @@ function settingsRender() {
   // llm-not-configured hint mirrors the config banner
   const hint = $('#settingsKeyHint');
   const cfg = state.config;
+  const hasKey = !!(s.saved && s.saved.model.api_key && s.saved.model.api_key.has_key);
   if (cfg && !cfg.llm_configured && !hasKey) {
     hint.textContent = 'No API key set \u2014 chat is disabled';
     hint.hidden = false;
@@ -702,9 +825,14 @@ function settingsRender() {
     hint.textContent = '';
     hint.hidden = true;
   }
+  settingsRenderPresets();
+  settingsRenderRetrieval();
+  settingsRenderAppearance();
+  settingsRenderAbout(s.saved ? s.saved.about : null);
   settingsRenderErrors();
   settingsMarkDirty();
   settingsRenderTestButton();
+  settingsRenderFooter();
 }
 
 function settingsRenderTestButton() {
@@ -731,7 +859,11 @@ async function settingsOpen() {
   s.touched = false;
   s.testing = false;
   s.testStatus = null;
-  s.form = { name: '', base_url: '', api_key: '' };
+  s.saving = false;
+  s.saveError = null;
+  s.advancedOpen = false;
+  s.discardConfirm = false;
+  s.form = { name: '', base_url: '', api_key: '', preset: 'concise', custom: '', top_k: 4, chunk_size: 600, theme: 'light', language: 'en' };
   s.saved = null;
   const bd = $('#settingsDrawer');
   bd.hidden = false;
@@ -741,14 +873,42 @@ async function settingsOpen() {
   try {
     const data = await api('/api/settings');
     const m = (data && data.model) || {};
+    const p = (data && data.persona) || {};
+    const r = (data && data.retrieval) || {};
+    const a = (data && data.appearance) || {};
     s.saved = {
-      name: m.name || '',
-      base_url: m.base_url || '',
-      has_key: !!(m.api_key && m.api_key.has_key),
+      model: { name: m.name || '', base_url: m.base_url || '', api_key: { has_key: !!(m.api_key && m.api_key.has_key) } },
+      persona: { preset: p.preset || 'concise', custom: p.custom || '' },
+      retrieval: { top_k: r.top_k, chunk_size: r.chunk_size },
+      appearance: { theme: a.theme || 'light', language: a.language || 'en' },
+      about: (data && data.about) || null,
     };
     if (!s.touched) {
-      s.form.name = s.saved.name;
-      s.form.base_url = s.saved.base_url;
+      s.form.name = s.saved.model.name;
+      s.form.base_url = s.saved.model.base_url;
+      s.form.preset = s.saved.persona.preset;
+      s.form.custom = s.saved.persona.custom;
+      s.form.top_k = s.saved.retrieval.top_k;
+      s.form.chunk_size = s.saved.retrieval.chunk_size;
+      s.form.theme = s.saved.appearance.theme;
+      s.form.language = s.saved.appearance.language;
+      // Appearance is instant and lives in localStorage (design §6.9 "one key").
+      // The live preference is authoritative over the stored backend value, so sync
+      // BOTH form and baseline — otherwise opening the drawer looks falsely dirty
+      // after using the topbar quick toggle.
+      let liveTheme = null, liveLang = null;
+      try {
+        liveTheme = localStorage.getItem('qyd-theme');
+        liveLang = localStorage.getItem('qyd-language');
+      } catch (_) { /* ignore */ }
+      if (liveTheme && THEMES.indexOf(liveTheme) !== -1) {
+        s.saved.appearance.theme = liveTheme;
+        s.form.theme = liveTheme;
+      }
+      if (liveLang && LANGUAGES.indexOf(liveLang) !== -1) {
+        s.saved.appearance.language = liveLang;
+        s.form.language = liveLang;
+      }
     }
     s.loaded = true;
     settingsRender();
@@ -764,12 +924,32 @@ async function settingsOpen() {
 function settingsClose() {
   const s = state.settings;
   if (!s.open) return;
+  if (s.discardConfirm) {
+    // Second Esc/backdrop/x while the confirm is up: cancel the confirm, keep editing.
+    s.discardConfirm = false;
+    settingsRenderFooter();
+    return;
+  }
+  if (s.dirty) {
+    // Design §6.6: closing while dirty asks first (tiny inline confirm in footer).
+    s.discardConfirm = true;
+    settingsRenderFooter();
+    $('#settingsConfirmDiscard').focus();
+    return;
+  }
   s.open = false;
   const bd = $('#settingsDrawer');
   bd.classList.remove('open');
   setTimeout(() => { if (!s.open) bd.hidden = true; }, 220);
   $('#settingsBtn').classList.remove('active');
   $('#settingsBtn').focus();
+}
+
+function settingsToggleAdvanced() {
+  const s = state.settings;
+  s.advancedOpen = !s.advancedOpen;
+  settingsRenderRetrieval();
+  settingsRenderErrors();
 }
 
 function settingsToggleKeyReveal() {
@@ -812,6 +992,117 @@ async function settingsTestConnection() {
   }
 }
 
+function settingsSetPreset(value) {
+  const s = state.settings;
+  s.form.preset = value;
+  s.touched = true;
+  settingsRenderPresets();
+  settingsMarkDirty();
+}
+
+function settingsSetCustom(value) {
+  const s = state.settings;
+  s.form.custom = value;
+  s.touched = true;
+  settingsRenderPresets();
+  settingsMarkDirty();
+}
+
+function settingsSetTheme(value) {
+  const s = state.settings;
+  s.form.theme = value;
+  s.touched = true;
+  applyTheme(value); // instant, no save needed
+  settingsRenderAppearance();
+  settingsMarkDirty();
+}
+
+function settingsSetLanguage(value) {
+  const s = state.settings;
+  s.form.language = value;
+  s.touched = true;
+  document.documentElement.setAttribute('lang', value); // instant
+  try { localStorage.setItem('qyd-language', value); } catch (_) { /* private mode */ }
+  settingsRenderAppearance();
+  settingsMarkDirty();
+}
+
+async function settingsSave() {
+  const s = state.settings;
+  if (s.saving || !s.dirty) return;
+  const errs = settingsRenderErrors();
+  if (errs.name || errs.base_url || errs.top_k || errs.chunk_size) {
+    s.saveError = 'Fix the highlighted fields before saving.';
+    settingsRenderFooter();
+    return;
+  }
+  s.saving = true;
+  s.saveError = null;
+  settingsRenderFooter();
+  const f = s.form;
+  const body = {
+    model: { name: f.name.trim(), base_url: f.base_url.trim() },
+    persona: { preset: f.preset, custom: f.custom },
+    retrieval: { top_k: f.top_k, chunk_size: f.chunk_size },
+    appearance: { theme: f.theme, language: f.language },
+  };
+  if (f.api_key) body.model.api_key = f.api_key; // empty keeps existing key
+  try {
+    const data = await api('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const m = (data && data.model) || {};
+    const p = (data && data.persona) || {};
+    const r = (data && data.retrieval) || {};
+    const a = (data && data.appearance) || {};
+    s.saved = {
+      model: { name: m.name || '', base_url: m.base_url || '', api_key: { has_key: !!(m.api_key && m.api_key.has_key) } },
+      persona: { preset: p.preset || 'concise', custom: p.custom || '' },
+      retrieval: { top_k: r.top_k, chunk_size: r.chunk_size },
+      appearance: { theme: a.theme || 'light', language: a.language || 'en' },
+      about: s.saved ? s.saved.about : null,
+    };
+    s.form.api_key = ''; // typed key is consumed by save
+    s.dirty = false;
+    s.testStatus = null;
+    settingsRender();
+    showToast('Settings saved');
+  } catch (e) {
+    s.saveError = e.message || 'Save failed';
+    settingsRenderFooter();
+  } finally {
+    s.saving = false;
+    settingsRenderFooter();
+  }
+}
+
+function settingsDiscard() {
+  const s = state.settings;
+  if (!s.saved) return;
+  s.form = {
+    name: s.saved.model.name,
+    base_url: s.saved.model.base_url,
+    api_key: '',
+    preset: s.saved.persona.preset,
+    custom: s.saved.persona.custom,
+    top_k: s.saved.retrieval.top_k,
+    chunk_size: s.saved.retrieval.chunk_size,
+    theme: s.saved.appearance.theme,
+    language: s.saved.appearance.language,
+  };
+  s.testStatus = null;
+  s.saveError = null;
+  s.discardConfirm = false;
+  settingsRender();
+  // instant appearance reverts with the staged values
+  applyTheme(s.form.theme);
+  document.documentElement.setAttribute('lang', s.form.language);
+  try { localStorage.setItem('qyd-language', s.form.language); } catch (_) { /* private mode */ }
+  showToast('Changes discarded');
+}
+
 /* ------------------------------------------------------------ render all */
 function renderAll() {
   renderSources();
@@ -828,8 +1119,17 @@ async function init() {
 
   // bind static controls
   $('#themeBtn').addEventListener('click', () => {
-    const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    applyTheme(next);
+    // Quick toggle cycles dark/light (design §6.9); resolves System to its effective value first.
+    const cur = effectiveTheme(document.documentElement.getAttribute('data-theme'));
+    applyTheme(cur === 'dark' ? 'light' : 'dark');
+    if (state.settings.open) {
+      // Sync the drawer's theme radio with the quick-toggle choice (instant, dirty).
+      let t = null;
+      try { t = localStorage.getItem('qyd-theme'); } catch (_) { /* ignore */ }
+      state.settings.form.theme = t && THEMES.indexOf(t) !== -1 ? t : 'light';
+      settingsRenderAppearance();
+      settingsMarkDirty();
+    }
   });
   $('#addSourcesBtn').addEventListener('click', openUploadModal);
   $('#sourcesAddBtn').addEventListener('click', openUploadModal);
@@ -854,21 +1154,46 @@ async function init() {
   });
   $('#settingsKeyReveal').addEventListener('click', settingsToggleKeyReveal);
   $('#settingsTestBtn').addEventListener('click', settingsTestConnection);
-  ['settingsModelName', 'settingsBaseUrl', 'settingsApiKey'].forEach((id) => {
+  $('#settingsAdvancedToggle').addEventListener('click', settingsToggleAdvanced);
+  $('#settingsSaveBtn').addEventListener('click', settingsSave);
+  $('#settingsDiscardBtn').addEventListener('click', settingsDiscard);
+  $('#settingsConfirmCancel').addEventListener('click', () => {
+    state.settings.discardConfirm = false;
+    settingsRenderFooter();
+  });
+  $('#settingsConfirmDiscard').addEventListener('click', () => {
+    settingsDiscard();
+    settingsClose();
+  });
+  ['settingsModelName', 'settingsBaseUrl', 'settingsApiKey', 'settingsTopK', 'settingsChunkSize', 'settingsCustom'].forEach((id) => {
     $('#' + id).addEventListener('input', () => {
       const s = state.settings;
       s.touched = true;
       s.form.name = $('#settingsModelName').value;
       s.form.base_url = $('#settingsBaseUrl').value;
       s.form.api_key = $('#settingsApiKey').value;
+      s.form.top_k = Number($('#settingsTopK').value);
+      s.form.chunk_size = Number($('#settingsChunkSize').value);
+      s.form.custom = $('#settingsCustom').value;
+      settingsRenderPresets();
       settingsMarkDirty();
       settingsRenderKeyMeta();
       settingsRenderTestButton();
       settingsRenderErrors();
+      settingsRenderFooter();
     });
   });
-  ['settingsModelName', 'settingsBaseUrl'].forEach((id) => {
+  ['settingsModelName', 'settingsBaseUrl', 'settingsTopK', 'settingsChunkSize'].forEach((id) => {
     $('#' + id).addEventListener('blur', () => settingsRenderErrors());
+  });
+  $$('input[name="personaPreset"]').forEach((r) => {
+    r.addEventListener('change', () => settingsSetPreset(r.value));
+  });
+  $$('input[name="appearanceTheme"]').forEach((r) => {
+    r.addEventListener('change', () => settingsSetTheme(r.value));
+  });
+  $$('input[name="appearanceLanguage"]').forEach((r) => {
+    r.addEventListener('change', () => settingsSetLanguage(r.value));
   });
 
   // drag & drop
@@ -1023,6 +1348,6 @@ async function pollIndexStatus() {
 }
 
 // smoke-test surface
-window.QYD = { state, renderAll, api, inlineMd, citedNumbers, renderAnswerHtml, settingsOpen, settingsClose, settingsTestConnection, settingsToggleKeyReveal, settingsRender };
+window.QYD = { state, renderAll, api, inlineMd, citedNumbers, renderAnswerHtml, settingsOpen, settingsClose, settingsTestConnection, settingsToggleKeyReveal, settingsRender, settingsSave, settingsDiscard, settingsToggleAdvanced, settingsSetPreset, settingsSetCustom, settingsSetTheme, settingsSetLanguage, applyTheme, effectiveTheme };
 
 init();
