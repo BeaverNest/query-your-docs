@@ -258,6 +258,13 @@ real KB):
 python scripts/smoke_api.py
 ```
 
+Browser smoke for the web UI (Playwright; throws away its own temp docs/KB/
+history, requires `OPENAI_API_KEY` for the live ask step):
+
+```bash
+/home/beavernest/.venv/bin/python scripts/smoke_frontend.py
+```
+
 ## Project structure
 
 ```

@@ -1,20 +1,129 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>query-your-docs — API server</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>query-your-docs</title>
+<link rel="stylesheet" href="/static/style.css?v=1">
 </head>
 <body>
-<h1>query-your-docs API server is running</h1>
-<p>The web UI (Step C) will replace this placeholder. API docs are at
-<a href="/docs">/docs</a>.</p>
-<ul>
-  <li><a href="/api/health">/api/health</a></li>
-  <li><a href="/api/config">/api/config</a></li>
-  <li><a href="/api/sources">/api/sources</a></li>
-  <li><a href="/api/history">/api/history</a></li>
-  <li><a href="/api/index/status">/api/index/status</a></li>
-</ul>
+<div id="app" class="app">
+
+  <!-- ============ Top bar (56px desktop / 48px mobile) ============ -->
+  <header class="topbar">
+    <button id="menuBtn" class="icon-btn topbar-menu" aria-label="Open sidebar" title="Open sidebar">&#9776;</button>
+    <div class="brand"><span class="brand-mark" aria-hidden="true">&#9670;</span><span class="brand-name">query-your-docs</span></div>
+    <div class="topbar-actions">
+      <button id="themeBtn" class="icon-btn" aria-label="Toggle dark mode" title="Toggle dark mode"></button>
+      <button id="addSourcesBtn" class="btn btn-primary topbar-add">+ Add sources</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- ============ Sidebar (300px desktop / drawer < 1024) ============ -->
+    <aside id="sidebar" class="sidebar" aria-label="Sidebar">
+      <div class="tabs" role="tablist" aria-label="Sidebar sections">
+        <button id="tabSources" class="tab active" role="tab" aria-selected="true" aria-controls="sourcesView" data-tab="sources">Sources</button>
+        <button id="tabHistory" class="tab" role="tab" aria-selected="false" aria-controls="historyView" data-tab="history">History</button>
+      </div>
+
+      <div id="sourcesView" class="sidebar-view" role="tabpanel">
+        <div class="view-head">
+          <span class="view-label">Documents</span>
+          <button id="sourcesAddBtn" class="btn btn-ghost btn-sm">+ Add</button>
+        </div>
+        <div id="sourcesList" class="list" role="list"></div>
+      </div>
+
+      <div id="historyView" class="sidebar-view" role="tabpanel" hidden>
+        <div class="view-head">
+          <span class="view-label">Conversations</span>
+          <button id="newChatBtn" class="btn btn-ghost btn-sm">+ New chat</button>
+        </div>
+        <div id="historyList" class="list" role="list"></div>
+      </div>
+    </aside>
+
+    <div id="scrim" class="scrim" hidden></div>
+
+    <!-- ============ Chat panel (max-width 760px, centered) ============ -->
+    <main class="chat" id="chatPane">
+      <div id="configBanner" class="banner banner-error" hidden>
+        <span class="banner-msg" id="configBannerMsg"></span>
+        <button id="configBannerDismiss" class="icon-btn banner-x" aria-label="Dismiss notification">&times;</button>
+      </div>
+      <div id="indexBanner" class="banner banner-index" hidden>
+        <span class="spinner" aria-hidden="true"></span>
+        <span class="banner-msg">Indexing knowledge base&hellip;</span>
+      </div>
+
+      <div id="chatScroll" class="chat-scroll">
+        <div id="chatInner" class="chat-inner">
+          <div id="emptyState" class="empty-state">
+            <div class="empty-mark" aria-hidden="true">&#9670;</div>
+            <h1 class="empty-title">Ask your documents</h1>
+            <p class="empty-sub">Upload PDF or TXT files, then chat with your knowledge base.<br>Answers include citations to sources.</p>
+            <button id="emptyUploadBtn" class="btn btn-primary btn-lg">Upload documents</button>
+          </div>
+          <div id="msgList" class="msg-list" hidden></div>
+        </div>
+      </div>
+
+      <div class="composer-wrap">
+        <div id="suggestions" class="suggestions" hidden></div>
+        <div class="composer">
+          <textarea id="composer" rows="1" placeholder="Ask your documents&hellip;" aria-label="Ask your documents" maxlength="4000"></textarea>
+          <button id="sendBtn" class="send-btn" aria-label="Send message" title="Send (Enter)" disabled></button>
+        </div>
+        <div id="composerHint" class="composer-hint" role="status" aria-live="polite"></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ============ Upload modal (560px / full-screen sheet < 640) ============ -->
+<div id="uploadModal" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="uploadTitle">
+    <div class="modal-head">
+      <h2 id="uploadTitle">Add sources</h2>
+      <button id="closeModalBtn" class="icon-btn" aria-label="Close dialog">&times;</button>
+    </div>
+    <div id="dropZone" class="dropzone" tabindex="0" role="button" aria-label="Drag and drop PDF or TXT files here, or press Enter to browse">
+      <div class="dz-icon" aria-hidden="true">+</div>
+      <div class="dz-text">Drag &amp; drop PDF/TXT files here</div>
+      <div class="dz-or">or</div>
+      <button id="browseBtn" class="btn" type="button">Browse files</button>
+      <input id="fileInput" type="file" multiple accept=".pdf,.txt" hidden>
+    </div>
+    <div id="fileQueue" class="file-queue" role="list"></div>
+    <div id="uploadError" class="banner banner-error" hidden></div>
+    <div class="modal-foot">
+      <div id="indexProgress" class="index-progress" hidden>
+        <div class="progress-bar" aria-hidden="true"><div class="progress-fill"></div></div>
+        <span class="index-progress-label">Indexing knowledge base&hellip;</span>
+      </div>
+      <button id="indexBtn" class="btn btn-primary" disabled>Index documents</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ Confirm modal (remove source) ============ -->
+<div id="confirmModal" class="modal-backdrop" hidden>
+  <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+    <div class="modal-head">
+      <h2 id="confirmTitle">Remove source?</h2>
+      <button id="confirmCancelX" class="icon-btn" aria-label="Close dialog">&times;</button>
+    </div>
+    <p id="confirmText" class="confirm-text"></p>
+    <div class="modal-foot">
+      <button id="confirmCancelBtn" class="btn" type="button">Cancel</button>
+      <button id="confirmOkBtn" class="btn btn-danger" type="button">Remove and reindex</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="/static/app.js?v=1"></script>
 </body>
 </html>
