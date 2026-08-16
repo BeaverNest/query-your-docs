@@ -19,6 +19,7 @@ embeddings → Q&A with citations.
 - [Architecture](#architecture)
 - [Quickstart](#quickstart)
 - [Usage](#usage)
+- [Web UI](#web-ui)
 - [Web API](#web-api)
 - [Project structure](#project-structure)
 - [Troubleshooting](#troubleshooting)
@@ -222,6 +223,27 @@ total chunks: 73
   riset_industri_otomotif_indonesia_2026-08: 40 chunks across 21 pages
 ```
 
+## Web UI
+
+Start the server and open <http://127.0.0.1:8000/> in your browser:
+
+```bash
+python server.py
+# query-your-docs web UI + API on http://127.0.0.1:8000 (API docs at /docs)
+```
+
+The NotebookLM-style interface lets you:
+
+- **Upload multiple documents** (PDF/TXT) and index them into one knowledge base.
+- **Chat in natural language** (Indonesian or English) and get answers with
+  **citation chips** — click a chip to see the exact source document, page
+  and relevance score.
+- **Keep history** — conversations persist across restarts in the sidebar,
+  so you can pick up where you left off.
+
+The UI talks to the same pipeline as the CLI: local embeddings, SQLite vector
+store, and any OpenAI-compatible LLM you configure in `.env`.
+
 ## Web API
 
 Start the FastAPI server (serves the web UI and the JSON API):
@@ -275,9 +297,10 @@ history.py                 SQLite conversation store (data/history.db)
 API.md                     web API contract
 scripts/download_model.py  fetch the ONNX model from Hugging Face
 scripts/smoke_api.py       end-to-end API smoke test (throwaway data)
+scripts/smoke_frontend.py  browser smoke test for the web UI (Playwright)
 requirements.txt           Python dependencies
 .env.example               config template (copy to .env)
-static/                    web UI assets (placeholder until frontend lands)
+static/                    web UI assets (index.html, style.css, app.js)
 data/docs/                 your PDFs (gitignored)
 models/                    downloaded model (gitignored)
 ```
