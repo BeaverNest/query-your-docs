@@ -14,8 +14,7 @@ The real data/ dirs are never touched. POST /api/settings/test is intercepted
 in-browser (Step B owns the real endpoint, running in parallel).
 
 Usage:
-  PLAYWRIGHT_BROWSERS_PATH=/home/beavernest/.cache/ms-playwright \
-  /home/beavernest/.venv/bin/python scripts/smoke_settings_drawer.py
+  .venv/bin/python scripts/smoke_settings_drawer.py
 
 Env:
   QYD_FE_PORT   port to bind the throwaway server (default 8895)

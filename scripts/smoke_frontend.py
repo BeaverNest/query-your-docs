@@ -7,7 +7,7 @@ data/kb.db is never touched. Requires Playwright (chromium) and a real
 OPENAI_API_KEY in the repo .env for the ask-with-citations step.
 
 Usage:
-  /home/beavernest/.venv/bin/python scripts/smoke_frontend.py
+  .venv/bin/python scripts/smoke_frontend.py
 
 Env:
   QYD_FE_PORT   port to bind the throwaway server (default 8894)

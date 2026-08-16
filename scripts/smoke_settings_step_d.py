@@ -15,8 +15,7 @@ Playwright flow, then tears everything down. The real data/ dirs are never
 touched. PUT /api/settings is the real backend endpoint (no interception).
 
 Usage:
-  PLAYWRIGHT_BROWSERS_PATH=/home/beavernest/.cache/ms-playwright \\
-  /home/beavernest/.venv/bin/python scripts/smoke_settings_step_d.py
+  .venv/bin/python scripts/smoke_settings_step_d.py
 
 Env:
   QYD_FE_PORT   port to bind the throwaway server (default 8896)
