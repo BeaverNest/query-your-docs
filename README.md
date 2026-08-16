@@ -1,10 +1,11 @@
-# rag-demo — Local RAG Document Intelligence
+# query-your-docs — Local RAG Document Intelligence
 
 Turn business documents into a searchable knowledge base and ask questions
 in natural language — every answer comes with **citations** to the source
 document and page. Runs fully on your own machine: local embeddings, SQLite
 vector store, and an OpenAI-compatible LLM of your choice.
 
+Ask questions about your business documents in natural language — answers with citations.
 Built as a portfolio demo for AI document intelligence: PDF → text → chunks →
 embeddings → Q&A with citations.
 
