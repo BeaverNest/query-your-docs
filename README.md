@@ -1,20 +1,35 @@
 # query-your-docs — Local RAG Document Intelligence
 
+![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
+![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)
+![Local AI](https://img.shields.io/badge/local--first-no%20cloud-4caf50?style=flat-square)
+
 Turn business documents into a searchable knowledge base and ask questions
 in natural language — every answer comes with **citations** to the source
 document and page. Runs fully on your own machine: local embeddings, SQLite
 vector store, and an OpenAI-compatible LLM of your choice.
 
-Ask questions about your business documents in natural language — answers with citations.
 Built as a portfolio demo for AI document intelligence: PDF → text → chunks →
 embeddings → Q&A with citations.
+
+## Table of Contents
+
+- [Features](#features)
+- [Architecture](#architecture)
+- [Quickstart](#quickstart)
+- [Usage](#usage)
+- [Project structure](#project-structure)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
 
 ## Features
 
 - **Local embeddings, zero API cost** — `intfloat/multilingual-e5-small`
   (384-dim, 512-token context) via ONNX Runtime. No PyTorch, no GPU needed.
-- **Works great for Indonesian and other languages** — e5-small is a
-  multilingual model; sample documents below are Indonesian business reports.
+- **Multilingual out of the box** — e5-small is a multilingual model; the
+  sample documents below are Indonesian business reports and questions can be
+  asked in Indonesian **or** English (see the examples in
+  [Usage](#usage)).
 - **SQLite vector store** — no external database. Cosine similarity over
   stored embeddings, top-k retrieval.
 - **Citations, not hallucinations** — the LLM is instructed to answer only
@@ -37,7 +52,7 @@ embeddings → Q&A with citations.
                                               ▼
                                        SQLite (data/kb.db)
                                               │
-   "ask 'Berapa PMI ...?'" ──► query vector ──┤ cosine top-k
+   "ask 'What was the July 2026 PMI?'" ──► query vector ──┤ cosine top-k
                                               ▼
                         context [1..k] + question
                                               │  OpenAI-compatible API
@@ -45,7 +60,7 @@ embeddings → Q&A with citations.
                          answer with citations [1..n] + source list
 ```
 
-## Install
+## Quickstart
 
 ```bash
 python -m venv .venv
@@ -59,9 +74,7 @@ python scripts/download_model.py
 Optional: if `pdftotext` is not installed, install poppler-utils
 (`apt install poppler-utils` on Debian/Ubuntu, `brew install poppler` on macOS).
 
-## Configure
-
-Copy `.env.example` to `.env` and set your LLM credentials (any
+Configure your LLM — copy `.env.example` to `.env` and set credentials (any
 OpenAI-compatible API works):
 
 ```bash
@@ -72,7 +85,8 @@ cp .env.example .env
 ```
 
 `rag.py` also accepts environment variables, so you can export them instead
-of using `.env`.
+of using `.env`. Then index your documents and ask your first question — see
+[Usage](#usage).
 
 ## Usage
 
@@ -97,6 +111,11 @@ INDEX_OK: 3 docs, 73 chunks -> data/kb.db
 
 ### 2. Ask questions
 
+**Works with Indonesian documents too** — the sample reports below are
+Indonesian business reports, and you can ask in Indonesian or English.
+
+Ask in Indonesian:
+
 ```bash
 python rag.py ask "Berapa PMI manufaktur Indonesia pada Juli 2026 dan bagaimana trennya?"
 ```
@@ -119,7 +138,33 @@ Sources:
   [4] Laporan Riset: PMI Manufaktur Indonesia (page 5, score 0.865)
 ```
 
-Another example — cross-document retrieval over the automotive sector report:
+The same question, in English — same documents, same retrieval, answer in
+the language of the question:
+
+```bash
+python rag.py ask "What was Indonesia's manufacturing PMI in July 2026 and how is the trend?"
+```
+
+```
+Question: What was Indonesia's manufacturing PMI in July 2026 and how is the trend?
+
+Answer: Indonesia's manufacturing PMI in July 2026 was 50.2, returning to a
+thin expansion zone (above the neutral 50 line) [1]. This rose from 46.9 in
+June, which was the worst contraction in a year [1]. The recovery was led by
+stabilized new orders and increased output (the first rise since February),
+plus the first hiring in five months [1]. However, export orders fell for a
+fifth consecutive month, input costs remained high (though easing), and
+selling prices rose sharply [1]. Business optimism reached its highest level
+since January [1].
+
+Sources:
+  [1] Laporan Riset: PMI Manufaktur Indonesia (page 1, score 0.883)
+  [2] Laporan Riset: PMI Manufaktur Indonesia (page 5, score 0.868)
+  [3] Laporan Riset: PMI Manufaktur Indonesia (page 5, score 0.854)
+  [4] riset industri otomotif indonesia 2026-08 (page 4, score 0.846)
+```
+
+Another cross-document retrieval example — the automotive sector report:
 
 ```bash
 python rag.py ask "Bagaimana kondisi industri otomotif Indonesia menurut riset terbaru?"
@@ -185,6 +230,17 @@ data/docs/                 your PDFs (gitignored)
 models/                    downloaded model (gitignored)
 ```
 
+## Troubleshooting
+
+- **`pdftotext` not found when indexing** — install poppler-utils
+  (`apt install poppler-utils` on Debian/Ubuntu, `brew install poppler` on
+  macOS).
+- **Model download fails** — check your connection to Hugging Face; for
+  stricter rate limits set `HF_TOKEN` and re-run
+  `python scripts/download_model.py`.
+- **Empty answer or API errors** — verify `OPENAI_API_KEY` in `.env` (and
+  `OPENAI_BASE_URL` / `RAG_LLM_MODEL` if you use a non-default endpoint).
+
 ## Notes
 
 - Chunking is sentence-based, ~600 tokens per chunk with a ~120-token
@@ -195,4 +251,5 @@ models/                    downloaded model (gitignored)
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Part of the
+[BeaverNest](https://github.com/BeaverNest) open-source portfolio.
