@@ -20,6 +20,16 @@ const state = {
   upload: { files: [], uploading: false, indexing: false, error: null },
   removeTarget: null,    // {id,title} pending confirm
   initialIndexPolling: false,
+  settings: {
+    open: false,
+    loaded: false,
+    touched: false,      // user edited a field since last load
+    saved: null,         // {name, base_url, has_key} snapshot from GET
+    form: { name: '', base_url: '', api_key: '' },  // staged values (key NEVER prefilled)
+    dirty: false,
+    testing: false,
+    testStatus: null,    // {kind:'ok'|'err', text}
+  },
 };
 
 /* ------------------------------------------------------------ helpers */
@@ -625,6 +635,183 @@ function showToast(msg, isError) {
   toastTimer = setTimeout(() => { el.hidden = true; }, 4000);
 }
 
+/* ------------------------------------------------------------ settings drawer */
+function settingsFieldErrors() {
+  const f = state.settings.form;
+  const errs = {};
+  if (!f.name.trim()) errs.name = 'Model name is required';
+  else if (f.name.length > 120) errs.name = 'Max 120 characters';
+  if (f.base_url.trim()) {
+    try {
+      const u = new URL(f.base_url.trim());
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('scheme');
+    } catch (_) {
+      errs.base_url = 'Must be a valid http(s) URL';
+    }
+  }
+  return errs;
+}
+
+function settingsRenderErrors() {
+  const errs = settingsFieldErrors();
+  const nameEl = $('#settingsModelName');
+  const urlEl = $('#settingsBaseUrl');
+  const nameErr = $('#settingsModelNameErr');
+  const urlErr = $('#settingsBaseUrlErr');
+  nameEl.classList.toggle('invalid', !!errs.name);
+  urlEl.classList.toggle('invalid', !!errs.base_url);
+  nameErr.hidden = !errs.name;
+  nameErr.textContent = errs.name || '';
+  urlErr.hidden = !errs.base_url;
+  urlErr.textContent = errs.base_url || '';
+  return errs;
+}
+
+function settingsMarkDirty() {
+  const s = state.settings;
+  const sv = s.saved || { name: '', base_url: '', has_key: false };
+  const f = s.form;
+  s.dirty = !!(f.name !== sv.name || f.base_url !== sv.base_url || f.api_key !== '');
+  $('#settingsDirtyChip').hidden = !s.dirty;
+}
+
+function settingsRenderKeyMeta() {
+  const s = state.settings;
+  const hasKey = !!(s.saved && s.saved.has_key);
+  const typed = !!s.form.api_key;
+  // Saved chip only when server has a key and the field is empty (typed value never shown on load)
+  $('#settingsKeySaved').hidden = !(hasKey && !typed);
+  $('#settingsApiKey').placeholder = hasKey && !typed ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022' : 'No API key set';
+}
+
+function settingsRender() {
+  const s = state.settings;
+  const f = s.form;
+  $('#settingsModelName').value = f.name;
+  $('#settingsBaseUrl').value = f.base_url;
+  $('#settingsApiKey').value = f.api_key;
+  $('#settingsKeyReveal').setAttribute('aria-label', $('#settingsApiKey').type === 'password' ? 'Show API key' : 'Hide API key');
+  settingsRenderKeyMeta();
+  // llm-not-configured hint mirrors the config banner
+  const hint = $('#settingsKeyHint');
+  const cfg = state.config;
+  if (cfg && !cfg.llm_configured && !hasKey) {
+    hint.textContent = 'No API key set \u2014 chat is disabled';
+    hint.hidden = false;
+  } else {
+    hint.textContent = '';
+    hint.hidden = true;
+  }
+  settingsRenderErrors();
+  settingsMarkDirty();
+  settingsRenderTestButton();
+}
+
+function settingsRenderTestButton() {
+  const s = state.settings;
+  const btn = $('#settingsTestBtn');
+  btn.disabled = s.testing || !s.form.name.trim();
+  btn.textContent = s.testing ? 'Testing\u2026' : 'Test connection';
+  const st = $('#settingsTestStatus');
+  st.className = 'test-status';
+  st.textContent = '';
+  if (s.testing) {
+    st.classList.add('testing');
+    st.textContent = 'Testing\u2026';
+  } else if (s.testStatus) {
+    st.classList.add(s.testStatus.kind);
+    st.textContent = s.testStatus.text;
+  }
+}
+
+async function settingsOpen() {
+  const s = state.settings;
+  if (s.open) return;
+  s.open = true;
+  s.touched = false;
+  s.testing = false;
+  s.testStatus = null;
+  s.form = { name: '', base_url: '', api_key: '' };
+  s.saved = null;
+  const bd = $('#settingsDrawer');
+  bd.hidden = false;
+  requestAnimationFrame(() => bd.classList.add('open'));
+  $('#settingsBtn').classList.add('active');
+  // load saved values from GET (key is never returned)
+  try {
+    const data = await api('/api/settings');
+    const m = (data && data.model) || {};
+    s.saved = {
+      name: m.name || '',
+      base_url: m.base_url || '',
+      has_key: !!(m.api_key && m.api_key.has_key),
+    };
+    if (!s.touched) {
+      s.form.name = s.saved.name;
+      s.form.base_url = s.saved.base_url;
+    }
+    s.loaded = true;
+    settingsRender();
+  } catch (e) {
+    // leave empty form; surface error inline
+    $('#settingsTestStatus').className = 'test-status err';
+    $('#settingsTestStatus').textContent = 'Could not load settings: ' + (e.message || 'network error');
+  }
+  settingsRender();
+  $('#settingsModelName').focus();
+}
+
+function settingsClose() {
+  const s = state.settings;
+  if (!s.open) return;
+  s.open = false;
+  const bd = $('#settingsDrawer');
+  bd.classList.remove('open');
+  setTimeout(() => { if (!s.open) bd.hidden = true; }, 220);
+  $('#settingsBtn').classList.remove('active');
+  $('#settingsBtn').focus();
+}
+
+function settingsToggleKeyReveal() {
+  const inp = $('#settingsApiKey');
+  const show = inp.type === 'password';
+  inp.type = show ? 'text' : 'password';
+  $('#settingsKeyReveal').setAttribute('aria-label', show ? 'Hide API key' : 'Show API key');
+}
+
+async function settingsTestConnection() {
+  const s = state.settings;
+  if (s.testing || !s.form.name.trim()) return;
+  const errs = settingsRenderErrors();
+  if (errs.name || errs.base_url) return;
+  s.testing = true;
+  s.testStatus = null;
+  settingsRenderTestButton();
+  try {
+    const body = { name: s.form.name.trim() };
+    if (s.form.base_url.trim()) body.base_url = s.form.base_url.trim();
+    if (s.form.api_key) body.api_key = s.form.api_key;
+    const data = await api('/api/settings/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const ms = (data && data.latency_ms != null) ? ' \u00B7 ' + Math.round(data.latency_ms) + 'ms' : '';
+    s.testStatus = { kind: 'ok', text: '\u2713 Connected' + ms };
+  } catch (e) {
+    if (e.code === 'not_found' || e.status === 404) {
+      s.testStatus = { kind: 'err', text: 'Test endpoint not available yet' };
+    } else if (e.code === 'connection-failed') {
+      s.testStatus = { kind: 'err', text: 'Connection failed: ' + (e.message || 'unknown') };
+    } else {
+      s.testStatus = { kind: 'err', text: 'Connection failed: ' + (e.message || 'unknown') };
+    }
+  } finally {
+    s.testing = false;
+    settingsRenderTestButton();
+  }
+}
+
 /* ------------------------------------------------------------ render all */
 function renderAll() {
   renderSources();
@@ -658,6 +845,31 @@ async function init() {
   $('#dropZone').addEventListener('click', () => $('#fileInput').click());
   $('#fileInput').addEventListener('change', (e) => { addFiles(e.target.files); e.target.value = ''; });
   $('#indexBtn').addEventListener('click', runIndex);
+
+  // settings drawer
+  $('#settingsBtn').addEventListener('click', settingsOpen);
+  $('#settingsCloseBtn').addEventListener('click', settingsClose);
+  $('#settingsDrawer').addEventListener('click', (e) => {
+    if (e.target === $('#settingsDrawer')) settingsClose(); // backdrop click
+  });
+  $('#settingsKeyReveal').addEventListener('click', settingsToggleKeyReveal);
+  $('#settingsTestBtn').addEventListener('click', settingsTestConnection);
+  ['settingsModelName', 'settingsBaseUrl', 'settingsApiKey'].forEach((id) => {
+    $('#' + id).addEventListener('input', () => {
+      const s = state.settings;
+      s.touched = true;
+      s.form.name = $('#settingsModelName').value;
+      s.form.base_url = $('#settingsBaseUrl').value;
+      s.form.api_key = $('#settingsApiKey').value;
+      settingsMarkDirty();
+      settingsRenderKeyMeta();
+      settingsRenderTestButton();
+      settingsRenderErrors();
+    });
+  });
+  ['settingsModelName', 'settingsBaseUrl'].forEach((id) => {
+    $('#' + id).addEventListener('blur', () => settingsRenderErrors());
+  });
 
   // drag & drop
   const dz = $('#dropZone');
@@ -754,7 +966,9 @@ async function init() {
   // global Esc
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
-    if (!$('#confirmModal').hidden) {
+    if (state.settings.open) {
+      settingsClose();
+    } else if (!$('#confirmModal').hidden) {
       state.removeTarget = null;
       $('#confirmModal').hidden = true;
     } else if (!$('#uploadModal').hidden) {
@@ -809,6 +1023,6 @@ async function pollIndexStatus() {
 }
 
 // smoke-test surface
-window.QYD = { state, renderAll, api, inlineMd, citedNumbers, renderAnswerHtml };
+window.QYD = { state, renderAll, api, inlineMd, citedNumbers, renderAnswerHtml, settingsOpen, settingsClose, settingsTestConnection, settingsToggleKeyReveal, settingsRender };
 
 init();

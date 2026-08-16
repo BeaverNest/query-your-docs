@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>query-your-docs</title>
-<link rel="stylesheet" href="/static/style.css?v=1">
+<link rel="stylesheet" href="/static/style.css?v=2">
 </head>
 <body>
 <div id="app" class="app">
@@ -14,6 +14,7 @@
     <button id="menuBtn" class="icon-btn topbar-menu" aria-label="Open sidebar" title="Open sidebar">&#9776;</button>
     <div class="brand"><span class="brand-mark" aria-hidden="true">&#9670;</span><span class="brand-name">query-your-docs</span></div>
     <div class="topbar-actions">
+      <button id="settingsBtn" class="icon-btn" aria-label="Settings" title="Settings">&#9881;</button>
       <button id="themeBtn" class="icon-btn" aria-label="Toggle dark mode" title="Toggle dark mode"></button>
       <button id="addSourcesBtn" class="btn btn-primary topbar-add">+ Add sources</button>
     </div>
@@ -122,8 +123,51 @@
   </div>
 </div>
 
+<!-- ============ Settings drawer (right slide-over, 400px / full-width <640) ============ -->
+<div id="settingsDrawer" class="drawer-backdrop" hidden>
+  <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="drawer-head">
+      <h2 id="settingsTitle">Settings</h2>
+      <div class="drawer-head-actions">
+        <span id="settingsDirtyChip" class="dirty-chip" hidden>Unsaved changes</span>
+        <button id="settingsCloseBtn" class="icon-btn" aria-label="Close settings" title="Close settings">&times;</button>
+      </div>
+    </div>
+    <div class="drawer-body">
+      <section class="settings-section" aria-labelledby="settingsModelLabel">
+        <h3 id="settingsModelLabel" class="settings-label">Model</h3>
+        <div class="settings-field">
+          <label for="settingsModelName">Model name</label>
+          <input id="settingsModelName" type="text" maxlength="120" autocomplete="off" placeholder="e.g. deepseek-v4-flash" />
+          <div class="field-error" id="settingsModelNameErr" hidden></div>
+        </div>
+        <div class="settings-field">
+          <label for="settingsBaseUrl">Provider base URL</label>
+          <input id="settingsBaseUrl" type="text" inputmode="url" autocomplete="off" placeholder="https://api.openai.com/v1" />
+          <div class="field-error" id="settingsBaseUrlErr" hidden></div>
+        </div>
+        <div class="settings-field">
+          <label for="settingsApiKey">API key</label>
+          <div class="key-wrap">
+            <input id="settingsApiKey" type="password" autocomplete="new-password" placeholder="No API key set" />
+            <button id="settingsKeyReveal" class="icon-btn key-reveal" type="button" aria-label="Show API key" title="Show API key">&#128065;</button>
+          </div>
+          <div class="key-meta">
+            <span id="settingsKeySaved" class="key-saved" hidden>Saved</span>
+            <span id="settingsKeyHint" class="key-hint" hidden></span>
+          </div>
+        </div>
+        <div class="settings-test-row">
+          <button id="settingsTestBtn" class="btn" type="button">Test connection</button>
+          <span id="settingsTestStatus" class="test-status" role="status" aria-live="polite"></span>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="/static/app.js?v=1"></script>
+<script src="/static/app.js?v=2"></script>
 </body>
 </html>
