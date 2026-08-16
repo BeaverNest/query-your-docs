@@ -10,7 +10,8 @@ FastAPI backend for the NotebookLM-style web UI. Served by `server.py`
   `{ok: false, error: {code, message}}` with a meaningful HTTP status.
 - **Error codes.** `bad-request`, `not-found`, `unsupported-type`,
   `size-cap`, `batch-too-large`, `dup-name`, `no-text-extracted`,
-  `indexing-in-progress`, `kb-empty`, `llm-not-configured`, `transient`.
+  `indexing-in-progress`, `kb-empty`, `llm-not-configured`,
+  `connection-failed`, `transient`.
 - **Secrets.** The API key is read from `.env` / environment and is never
   returned by any endpoint or error.
 - **Time.** All timestamps are UTC ISO-8601 (`YYYY-MM-DDTHH:MM:SS+00:00`).
@@ -37,8 +38,12 @@ FastAPI backend for the NotebookLM-style web UI. Served by `server.py`
 ## GET /api/config
 
 ```json
-{"ok": true, "data": {"llm_configured": true, "model": "deepseek-v4-flash"}}
+{"ok": true, "data": {"llm_configured": true, "model": "deepseek-v4-flash",
+  "persona": {"preset": "concise"}, "retrieval": {"top_k": 4}}}
 ```
+
+`persona.preset` and `retrieval.top_k` reflect saved settings so the chat
+path (and any client) can use the same knobs as `/api/ask`.
 
 ## GET /api/settings
 
@@ -92,6 +97,34 @@ Example:
 
 Saved model values (name/base_url/api_key) are applied to the process
 environment, so `/api/ask` uses them immediately and after restart.
+
+## POST /api/settings/test
+
+Tests a **staged** LLM connection without saving anything. Body is the flat
+shape from the Model form; missing fields fall back to saved settings (so a
+user who only edits the model name can test with the existing key/base):
+
+```json
+{"name": "gpt-4o-mini", "base_url": "https://api.openai.com/v1",
+ "api_key": "sk-..."}
+```
+
+```json
+{"ok": true, "data": {"latency_ms": 842, "model": "gpt-4o-mini"}}
+```
+
+- Performs one tiny chat completion (`max_tokens=1`) with a 10s timeout.
+- `latency_ms` is the round-trip in milliseconds.
+- **Never persists anything** — the settings store is untouched.
+- **Never returns or logs the API key.**
+
+Errors (same envelope):
+
+- 400 `bad-request` — model name missing/empty or >120 chars, bad base URL,
+  oversized fields.
+- 503 `llm-not-configured` — no API key staged and none saved.
+- 502 `connection-failed` — provider/auth/network failure (message is
+  sanitized: never contains the key).
 
 ## GET /api/sources
 
@@ -159,6 +192,10 @@ Removes the file and reindexes the remaining documents.
 
 - `conversation_id` optional: omit to start a new conversation (title = first
   question, truncated). Provide an existing id to continue it (404 if missing).
+- Retrieval and persona come from saved settings: `retrieval.top_k` chunks are
+  retrieved and the active `persona.preset` (+ additive `custom`) is used as
+  the system prompt. Defaults: top_k=4, preset=`concise` (byte-identical to
+  the historical hardcoded prompt).
 - Response: `n` in each source matches the `[n]` citation markers in `answer`.
 
 ```json

@@ -182,12 +182,31 @@ def main() -> int:
                 check("ask answer contains [1] citation marker", "[1]" in d["answer"], d["answer"][:120])
                 conv_id = d["conversation_id"]
 
+                # Step B: ask honors saved retrieval.top_k + persona (design 6.8/7).
+                code, j = req("PUT", "/api/settings", body={
+                    "persona": {"preset": "detailed", "custom": "Always cite page numbers."},
+                    "retrieval": {"top_k": 6},
+                })
+                check("pre-ask: save top_k=6 + detailed persona",
+                      code == 200 and j["data"]["retrieval"]["top_k"] == 6
+                      and j["data"]["persona"]["preset"] == "detailed", str(j)[:200])
+                code, j = req("POST", "/api/ask", body={"conversation_id": conv_id, "question": "Apa isi utama laporan PMI manufaktur Indonesia?"})
+                check("ask uses saved top_k=6 (sources count = 6)",
+                      code == 200 and len(j["data"]["sources"]) == 6,
+                      f"status {code}, sources={len(j.get('data', {}).get('sources', []))}" if code == 200 else str(j)[:200])
+                # reset knobs for the rest of the smoke (defaults)
+                code, j = req("PUT", "/api/settings", body={
+                    "persona": {"preset": "concise", "custom": ""},
+                    "retrieval": {"top_k": 4},
+                })
+                check("post-ask: reset knobs to defaults", code == 200, str(j)[:200])
+
                 print("== history ==")
                 code, j = req("GET", "/api/history")
                 check("history lists 1 conversation", code == 200 and len(j["data"]["conversations"]) == 1, str(j)[:200])
                 code, j = req("GET", f"/api/history/{conv_id}")
-                check("history detail has 2 messages (user+assistant)",
-                      code == 200 and len(j["data"]["conversation"]["messages"]) == 2, str(j)[:200])
+                check("history detail has messages (user+assistant pairs from both asks)",
+                      code == 200 and len(j["data"]["conversation"]["messages"]) == 4, str(j)[:200])
                 msgs = j["data"]["conversation"]["messages"]
                 check("assistant message stores sources", msgs[1]["role"] == "assistant" and msgs[1]["sources"] and len(msgs[1]["sources"]) > 0)
 
@@ -195,7 +214,7 @@ def main() -> int:
                 code, j = req("POST", "/api/ask", body={"conversation_id": conv_id, "question": "Apa tren suku bunga?"})
                 check("ask continues existing conversation", code == 200 and j["data"]["conversation_id"] == conv_id, str(j)[:200])
                 code, j = req("GET", f"/api/history/{conv_id}")
-                check("history detail now has 4 messages", len(j["data"]["conversation"]["messages"]) == 4, str(j)[:200])
+                check("history detail now has 6 messages", len(j["data"]["conversation"]["messages"]) == 6, str(j)[:200])
             else:
                 check("ask with citations works", False, f"status {code}: {str(j)[:300]}")
         else:
@@ -310,6 +329,82 @@ def main() -> int:
         code, j = req("PUT", "/api/settings", body={"persona": {"custom": "x" * 2001}})
         check("PUT settings: custom >2000 chars -> 400",
               code == 400 and j["error"]["code"] == "bad-request", str(j)[:200])
+
+        print("== settings test endpoint (Step B) ==")
+        # GET /api/config extended with persona + retrieval knobs (design 10.5).
+        # The smoke mutates settings above, so only assert shape + range, not defaults.
+        code, j = req("GET", "/api/config")
+        d_cfg = j.get("data", {})
+        check("config exposes persona.preset + retrieval.top_k",
+              code == 200
+              and isinstance(d_cfg.get("persona", {}).get("preset"), str)
+              and d_cfg["persona"]["preset"] in ("concise", "detailed", "beginner", "indonesian")
+              and isinstance(d_cfg.get("retrieval", {}).get("top_k"), int)
+              and 1 <= d_cfg["retrieval"]["top_k"] <= 10, str(j)[:200])
+
+        # chunk_size applies on the NEXT index (whole-library rebuild). The
+        # KB was emptied by the remove-source section, so re-upload + reindex
+        # with a small fixture, then compare chunk counts for 200 vs 2000.
+        code, j = req("POST", "/api/upload", files={
+            "files": ("chunk_probe.txt", b"Probe sentence for chunk sizing. " * 200),
+        })
+        check("chunk probe: upload txt -> ready",
+              code == 200 and j["data"]["results"][0]["status"] == "ready", str(j)[:200])
+        code, j = req("PUT", "/api/settings", body={"retrieval": {"chunk_size": 200}})
+        check("chunk probe: save chunk_size=200", code == 200 and j["data"]["retrieval"]["chunk_size"] == 200, str(j)[:200])
+        code, j = req("POST", "/api/index")
+        n_small = j["data"]["result"]["chunks"] if code == 200 else -1
+        check("chunk probe: index with chunk_size=200 succeeds", code == 200 and n_small > 0, str(j)[:200])
+        code, j = req("PUT", "/api/settings", body={"retrieval": {"chunk_size": 2000}})
+        check("chunk probe: save chunk_size=2000", code == 200 and j["data"]["retrieval"]["chunk_size"] == 2000, str(j)[:200])
+        code, j = req("POST", "/api/index")
+        n_large = j["data"]["result"]["chunks"] if code == 200 else -1
+        check("chunk probe: index with chunk_size=2000 succeeds", code == 200 and n_large > 0, str(j)[:200])
+        check("chunk probe: smaller chunk_size -> more chunks (applies on next index)",
+              n_small > n_large, f"200->{n_small} chunks, 2000->{n_large} chunks")
+
+        # validation failures -> 400 bad-request
+        code, j = req("POST", "/api/settings/test", body={})
+        check("settings/test: missing name -> 400 bad-request",
+              code == 400 and j["error"]["code"] == "bad-request", str(j)[:200])
+        code, j = req("POST", "/api/settings/test", body={"name": "m", "base_url": "not-a-url", "api_key": "k"})
+        check("settings/test: invalid base_url -> 400 bad-request",
+              code == 400 and j["error"]["code"] == "bad-request", str(j)[:200])
+        code, j = req("POST", "/api/settings/test", body={"name": "x" * 121, "api_key": "k"})
+        check("settings/test: name >120 chars -> 400 bad-request",
+              code == 400 and j["error"]["code"] == "bad-request", str(j)[:200])
+        code, j = req("POST", "/api/settings/test", body={"name": "m", "api_key": 123})
+        check("settings/test: non-string api_key -> 400 bad-request",
+              code == 400 and j["error"]["code"] == "bad-request", str(j)[:200])
+
+        # unreachable provider -> connection-failed (deterministic, fast, no save)
+        code, j = req("POST", "/api/settings/test", body={
+            "name": "staged-model", "base_url": "http://127.0.0.1:9/v1", "api_key": "«redacted:sk-…»",
+        })
+        check("settings/test: unreachable provider -> 502 connection-failed",
+              code == 502 and j["error"]["code"] == "connection-failed", str(j)[:200])
+        check("settings/test: error message never contains the staged key",
+              "«redacted:sk-…»" not in json.dumps(j), str(j)[:200])
+
+        # staged test must NOT persist anything
+        code, j = req("GET", "/api/settings")
+        check("settings/test: staged values not saved (model still smoke-model)",
+              code == 200 and j["data"]["model"]["name"] == "smoke-model", str(j["data"]["model"])[:200])
+
+        # real provider round-trip -> ok + latency_ms (only when a live key exists)
+        if WITH_ASK and os.environ.get("OPENAI_API_KEY"):
+            real_model = os.environ.get("RAG_LLM_MODEL", "deepseek-v4-flash")
+            real_base = os.environ.get("OPENAI_BASE_URL", "")
+            body_t = {"name": real_model, "api_key": os.environ["OPENAI_API_KEY"]}
+            if real_base:
+                body_t["base_url"] = real_base
+            code, j = req("POST", "/api/settings/test", body=body_t)
+            ok_shape = (code == 200 and j.get("ok") is True
+                        and isinstance(j["data"].get("latency_ms"), int)
+                        and j["data"].get("model") == real_model)
+            check("settings/test: real provider -> ok + latency_ms", ok_shape, str(j)[:200])
+        else:
+            print("  SKIP  settings/test real-provider step (no OPENAI_API_KEY)")
 
         print("== no secrets ==")
         code, j = req("GET", "/api/config")

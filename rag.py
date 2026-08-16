@@ -11,11 +11,12 @@ Commands:
   python rag.py stats                 show KB statistics
 
 Library use (imported by server.py):
-  rag.index_docs(paths)            -> structured summary dict
+  rag.index_docs(paths, chunk_size=None) -> structured summary dict
   rag.kb_sources()                 -> [{id, title, pages, chunks}]
   rag.kb_count()                   -> total chunk count
-  rag.answer_question(q, k)        -> {"answer", "sources":[{n, doc_id, title,
-                                     page, chunk_idx, score, snippet}]}
+  rag.answer_question(q, k, preset, custom) -> {"answer", "sources":[{n, doc_id,
+                                     title, page, chunk_idx, score, snippet}]}
+  rag.build_system_prompt(preset, custom) -> effective persona system prompt
 
 Environment (or .env next to this file):
   OPENAI_API_KEY   required for `ask`/answer_question (any OpenAI-compatible API)
@@ -35,6 +36,7 @@ import sys
 from pathlib import Path
 
 from embed import E5Embedder, EMBED_DIM
+from settings import CUSTOM_SUFFIX_TEMPLATE, PRESETS, PRESET_CONCISE
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("RAG_DB", SCRIPT_DIR / "data" / "kb.db"))
@@ -43,6 +45,22 @@ DB_PATH = Path(os.environ.get("RAG_DB", SCRIPT_DIR / "data" / "kb.db"))
 TARGET_CHUNK_TOKENS = 600
 OVERLAP_TOKENS = 120
 TOP_K_DEFAULT = 4
+DEFAULT_PRESET = "concise"
+
+
+def build_system_prompt(preset: str = DEFAULT_PRESET, custom: str = "") -> str:
+    """Effective system prompt for the selected persona.
+
+    `preset` must be one of the ids in settings.PRESETS (concise/detailed/
+    beginner/indonesian). `custom` is additive: when non-empty it is appended
+    as "\\n\\nAdditional instructions:\\n{custom}" (design section 6.7/7).
+    The default preset `concise` is byte-identical to the historical
+    hardcoded prompt, so behaviour is unchanged until the user saves a choice.
+    """
+    system = PRESETS.get(preset, PRESET_CONCISE)
+    if custom and custom.strip():
+        system += CUSTOM_SUFFIX_TEMPLATE.format(custom=custom)
+    return system
 
 
 class RagError(Exception):
@@ -236,11 +254,15 @@ def _get_tokenizer():
     return _get_tokenizer._cache
 
 
-def index_docs(paths: list[Path]) -> dict:
+def index_docs(paths: list[Path], chunk_size: int | None = None) -> dict:
     """(Re)build the knowledge base from the given PDF/TXT files.
 
     The KB is a whole-library store: every index run deletes all chunks and
     re-embeds the given documents (uploading one doc means reindexing all).
+
+    `chunk_size` is the target chunk size in tokens (100-2000); None uses
+    TARGET_CHUNK_TOKENS. Because chunking happens at index time, a changed
+    chunk_size only applies on the NEXT index rebuild (design section 6.8).
 
     Returns a structured summary:
       {docs_indexed, docs_total, chunks, per_doc: [{name, pages, chunks,
@@ -248,6 +270,8 @@ def index_docs(paths: list[Path]) -> dict:
     """
     embedder = _get_embedder()
     tokenizer = _get_tokenizer()
+
+    target = chunk_size if isinstance(chunk_size, int) and chunk_size > 0 else TARGET_CHUNK_TOKENS
 
     con = kb_connect()
     con.execute("DELETE FROM chunks")  # rebuild
@@ -260,7 +284,7 @@ def index_docs(paths: list[Path]) -> dict:
         doc_id = path.stem
         chunk_texts: list[tuple[int, str]] = []  # (page, text)
         for page, text in extract_doc_pages(path):
-            for chunk in chunk_text(text, tokenizer):
+            for chunk in chunk_text(text, tokenizer, target=target):
                 chunk_texts.append((page, chunk))
 
         if not chunk_texts:
@@ -323,8 +347,17 @@ def retrieve(query_vec, k: int):
 
 
 # ------------------------------------------------------------------ answer
-def answer_question(question: str, k: int = TOP_K_DEFAULT) -> dict:
+def answer_question(
+    question: str,
+    k: int = TOP_K_DEFAULT,
+    preset: str = DEFAULT_PRESET,
+    custom: str = "",
+) -> dict:
     """Retrieve top-k chunks and produce an LLM answer with citations.
+
+    `preset` selects the persona system prompt (settings.PRESETS); `custom`
+    is appended as additive instructions when non-empty. Defaults keep the
+    historical concise behaviour.
 
     Returns {"answer": str, "sources": [{n, doc_id, title, page, chunk_idx,
     score, snippet}]} where `n` matches the [n] markers in `answer`.
@@ -345,13 +378,7 @@ def answer_question(question: str, k: int = TOP_K_DEFAULT) -> dict:
         context_parts.append(f"{header}\n{text}")
     context = "\n\n".join(context_parts)
 
-    system = (
-        "You are a document-intelligence assistant. Answer the user's question using ONLY "
-        "the provided context. Cite the source of every factual claim with its bracketed "
-        "reference number, e.g. [1] or [1,2]. If the context does not contain the answer, "
-        "say so clearly and do not invent facts. Answer in the language of the question. "
-        "Keep the answer concise (max ~120 words)."
-    )
+    system = build_system_prompt(preset=preset, custom=custom)
     user = f"Question: {question}\n\nContext:\n{context}"
 
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -384,10 +411,10 @@ def answer_question(question: str, k: int = TOP_K_DEFAULT) -> dict:
     return {"answer": answer, "sources": sources}
 
 
-def ask(question: str, k: int) -> None:
+def ask(question: str, k: int, preset: str = DEFAULT_PRESET, custom: str = "") -> None:
     """CLI wrapper around answer_question (kept for `python rag.py ask`)."""
     try:
-        result = answer_question(question, k)
+        result = answer_question(question, k, preset=preset, custom=custom)
     except RagError as exc:
         print(f"ASK_ERROR: {exc}")
         sys.exit(1)
@@ -438,6 +465,8 @@ def main() -> None:
     p_ask = sub.add_parser("ask", help="answer a question with citations")
     p_ask.add_argument("question")
     p_ask.add_argument("-k", "--top-k", type=int, default=TOP_K_DEFAULT, help="number of chunks to retrieve (default 4)")
+    p_ask.add_argument("--preset", default=DEFAULT_PRESET, help="persona preset: concise, detailed, beginner, indonesian (default concise)")
+    p_ask.add_argument("--custom", default="", help="additive custom instructions appended to the preset")
 
     sub.add_parser("stats", help="show KB statistics")
 
@@ -446,7 +475,7 @@ def main() -> None:
     if args.command == "index":
         index_docs(collect_input(args.path))
     elif args.command == "ask":
-        ask(args.question, args.top_k)
+        ask(args.question, args.top_k, preset=args.preset, custom=args.custom)
     elif args.command == "stats":
         stats()
 

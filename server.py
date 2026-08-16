@@ -14,6 +14,7 @@ Endpoints (see API.md for the full contract):
   GET    /api/config
   GET    /api/settings
   PUT    /api/settings
+  POST   /api/settings/test
   GET    /api/sources
   POST   /api/upload               multipart, multiple files
   POST   /api/index
@@ -33,6 +34,7 @@ import os
 import re
 import shutil
 import threading
+import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,7 +48,13 @@ from fastapi.staticfiles import StaticFiles
 import rag
 from history import CONVERSATION_ID_RE, HistoryStore
 from rag import RagError
-from settings import SettingsStore, validate_payload
+from settings import (
+    MAX_API_KEY_CHARS,
+    MAX_BASE_URL_CHARS,
+    MAX_MODEL_NAME_CHARS,
+    SettingsStore,
+    validate_payload,
+)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 load_dotenv = getattr(rag, "load_dotenv", None)
@@ -140,10 +148,16 @@ def _llm_configured() -> bool:
 
 
 def _run_index_locked() -> dict:
-    """Rebuild the whole KB from the docs dir. Caller holds _INDEX_LOCK."""
+    """Rebuild the whole KB from the docs dir. Caller holds _INDEX_LOCK.
+
+    Uses the saved retrieval.chunk_size (applies on this next index; the
+    chunker runs at index time, so a saved change takes effect on the next
+    rebuild, matching design section 6.8).
+    """
     _index_state.update({"status": "indexing", "started_at": _now_utc(), "result": None, "error": None})
     try:
-        result = rag.index_docs(_collect_docs())
+        chunk_size = _settings_int("retrieval.chunk_size", rag.TARGET_CHUNK_TOKENS)
+        result = rag.index_docs(_collect_docs(), chunk_size=chunk_size)
         _index_state.update({"status": "idle", "finished_at": _now_utc(), "result": result, "error": None})
         return result
     except Exception as exc:  # noqa: BLE001 - surfaced as JSON error
@@ -241,10 +255,35 @@ def api_health():
 
 @app.get("/api/config")
 def api_config():
+    """Runtime config: model bridge + the knobs the ask path will use.
+
+    Extended per design section 10.5 to expose persona.preset and
+    retrieval.top_k so the chat path and future clients use saved settings.
+    """
+    sv = settings_store.view()
     return _envelope_ok({
         "llm_configured": _llm_configured(),
         "model": os.environ.get("RAG_LLM_MODEL", DEFAULT_LLM_MODEL),
+        "persona": {"preset": sv["persona"]["preset"]},
+        "retrieval": {"top_k": sv["retrieval"]["top_k"]},
     })
+
+
+def _settings_int(key: str, fallback: int) -> int:
+    """Read an integer setting defensively (corrupt rows fall back)."""
+    try:
+        return int(settings_store.get(key))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _effective_ask_knobs() -> tuple[int, str, str]:
+    """Saved ask knobs: (top_k, persona preset, custom instructions).
+
+    Falls back to rag defaults when the settings row is missing/corrupt.
+    """
+    sv = settings_store.view()
+    return sv["retrieval"]["top_k"], sv["persona"]["preset"], sv["persona"]["custom"]
 
 
 @app.get("/api/settings")
@@ -285,6 +324,105 @@ def api_settings_put(body: dict):
     settings_store.save(normalized)
     _sync_env_from_settings()
     return _envelope_ok(settings_store.view())
+
+
+TEST_CONNECT_TIMEOUT_SECONDS = 10.0
+
+
+def _resolve_test_config(body: dict) -> tuple[str, str, str]:
+    """Merge staged test values with saved settings.
+
+    Body is the flat staged shape from the Model form: {name, base_url?,
+    api_key?}. Missing fields fall back to the saved settings (a user who
+    only edits the model name can still test with the existing key/base).
+    Returns (name, base_url, api_key). Raises HTTPException on validation
+    errors — the raw key never appears in any message.
+    """
+    name = body.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise _err("bad-request", "model.name is required and must be non-empty.", 400)
+    name = name.strip()
+    if len(name) > MAX_MODEL_NAME_CHARS:
+        raise _err("bad-request", f"model.name must be at most {MAX_MODEL_NAME_CHARS} characters.", 400)
+
+    base_url = body.get("base_url")
+    if base_url is None:
+        base_url = settings_store.get("model.base_url")
+    if not isinstance(base_url, str):
+        raise _err("bad-request", "model.base_url must be a string.", 400)
+    base_url = base_url.strip()
+    if len(base_url) > MAX_BASE_URL_CHARS:
+        raise _err("bad-request", f"model.base_url must be at most {MAX_BASE_URL_CHARS} characters.", 400)
+    if base_url:
+        from settings import _is_http_url
+
+        if not _is_http_url(base_url):
+            raise _err("bad-request", "model.base_url must be an http(s) URL.", 400)
+
+    api_key = body.get("api_key")
+    if api_key is None:
+        api_key = settings_store.get("model.api_key")
+    if not isinstance(api_key, str):
+        raise _err("bad-request", "model.api_key must be a string.", 400)
+    api_key = api_key.strip()
+    if len(api_key) > MAX_API_KEY_CHARS:
+        raise _err("bad-request", f"model.api_key must be at most {MAX_API_KEY_CHARS} characters.", 400)
+    if not api_key:
+        raise _err("llm-not-configured", "No API key set — add one or save a key first.", 503)
+
+    return name, base_url, api_key
+
+
+def _test_error_message(exc: Exception) -> str:
+    """Map an LLM/connection error to a sanitized, key-free message."""
+    try:
+        status = getattr(exc, "status_code", None)
+        if status == 401:
+            return "Authentication failed (401) — check the API key."
+        if status == 404:
+            return "Model or endpoint not found (404) — check the model name and base URL."
+        if status == 429:
+            return "Rate limited (429) — try again shortly."
+        if status is not None:
+            return f"Provider error ({status})."
+    except Exception:  # noqa: BLE001 - never crash while sanitizing
+        pass
+    return "Connection failed — check the base URL and network access."
+
+
+@app.post("/api/settings/test")
+def api_settings_test(body: dict):
+    """Test a staged LLM connection WITHOUT saving anything.
+
+    Body (flat staged shape from the Model form): {name, base_url?,
+    api_key?}. Missing fields fall back to saved settings. Performs one tiny
+    chat completion against the provider with a 10s timeout and returns the
+    latency. Never persists; never returns or logs the API key.
+
+    Response: {ok: true, data: {latency_ms, model}} on success, or
+    {ok: false, error: {code: "connection-failed"|"bad-request"|...}}.
+    """
+    if not isinstance(body, dict):
+        raise _err("bad-request", "Request body must be a JSON object.", 400)
+
+    name, base_url, api_key = _resolve_test_config(body)
+
+    from openai import OpenAI
+
+    client = OpenAI(api_key=api_key, base_url=base_url or None, timeout=TEST_CONNECT_TIMEOUT_SECONDS)
+    started = time.monotonic()
+    try:
+        client.chat.completions.create(
+            model=name,
+            messages=[{"role": "user", "content": "ping"}],
+            max_tokens=1,
+        )
+    except Exception as exc:  # noqa: BLE001 - connection errors map to connection-failed
+        traceback.print_exc()
+        raise _err("connection-failed", _test_error_message(exc), 502)
+    latency_ms = int((time.monotonic() - started) * 1000)
+
+    return _envelope_ok({"latency_ms": latency_ms, "model": name})
 
 
 @app.get("/api/sources")
@@ -451,7 +589,8 @@ def api_ask(body: dict):
         raise _err("llm-not-configured", "OPENAI_API_KEY is not configured.", 503)
 
     try:
-        result = rag.answer_question(question, k=rag.TOP_K_DEFAULT)
+        top_k, preset, custom = _effective_ask_knobs()
+        result = rag.answer_question(question, k=top_k, preset=preset, custom=custom)
     except RagError as exc:
         raise _err(exc.code, str(exc), exc.status)
     except Exception as exc:  # noqa: BLE001 - LLM/network failures are transient
